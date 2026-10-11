@@ -1,4 +1,7 @@
-"""Cola de trabajos: un solo worker procesa de uno en uno (la GPU es una sola)."""
+"""Cola de trabajos: varios workers la atienden en paralelo (cada uno, un trabajo a la vez).
+
+Cuántos depende del motor: con Modal cada trabajo corre en su propio contenedor con su propia GPU;
+con la GPU local solo cabe uno (ver `parallel_jobs` en app/engine.py)."""
 from __future__ import annotations
 
 import logging
@@ -47,13 +50,18 @@ class JobManager:
         self._queue: "queue.Queue[str]" = queue.Queue(maxsize=config.MAX_QUEUE)
         self._lock = threading.Lock()
         self._stop = threading.Event()
-        self._worker = threading.Thread(target=self._run, name="splitter-worker", daemon=True)
+        n = max(1, getattr(engine, "parallel_jobs", 1))
+        self._workers = [
+            threading.Thread(target=self._run, name=f"splitter-worker-{i + 1}", daemon=True) for i in range(n)
+        ]
         self._cleaner = threading.Thread(target=self._clean_loop, name="splitter-cleaner", daemon=True)
 
     # -- ciclo de vida -------------------------------------------------------
     def start(self) -> None:
         config.DATA_DIR.mkdir(parents=True, exist_ok=True)
-        self._worker.start()
+        for w in self._workers:
+            w.start()
+        log.info("%d trabajo(s) en paralelo", len(self._workers))
         self._cleaner.start()
 
     def stop(self) -> None:

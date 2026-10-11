@@ -11,14 +11,14 @@ de salida y límite de tamaño de archivo.
 
 ```
 Página  ──POST /api/jobs──▶  guarda el audio y lo mete a la cola
-   ▲                              │ (un worker procesa de uno en uno, usa la GPU)
+   ▲                              │ (con Modal, hasta 3 trabajos a la vez, cada uno en su GPU)
    │◀── SSE /events (progreso) ───┘
    │──GET preview / download──▶  convierte con ffmpeg y entrega
 ```
 
 - Los stems se generan **una sola vez en WAV** y se convierten al formato pedido al descargar (se cachean).
 - Los resultados se borran solos a los 60 min (`SPLITTER_JOB_TTL_MINUTES`). El audio original se borra al terminar.
-- Hay un solo trabajo corriendo a la vez (la GPU es una); los demás esperan en cola y la API informa su posición.
+- Con Modal corren hasta `SPLITTER_PARALLEL_JOBS` trabajos a la vez (3), cada uno en su propio contenedor; los demás esperan en cola y la API informa su posición. Con la GPU local, uno a la vez.
 
 ## Instalación (Linux)
 
@@ -43,6 +43,8 @@ SPLITTER_ENGINE=fake uvicorn app.main:app --reload --port 8000
 python tests/smoke_test.py         # prueba de punta a punta
 python tests/concurrency_test.py   # descargas simultáneas de la misma pista
 python tests/modal_errors_test.py  # los fallos de Modal llegan a la página con mensajes entendibles
+python tests/limits_test.py        # límite de minutos por audio y de trabajos por hora
+python tests/parallel_test.py      # varios trabajos a la vez
 ```
 
 El modo `fake` genera tonos de prueba; sirve para desarrollar el frontend sin esperar a los modelos.
@@ -199,6 +201,8 @@ es.addEventListener("update", (e) => {
 | `SPLITTER_MAX_UPLOAD_MB` | `100` | Límite de tamaño de archivo |
 | `SPLITTER_JOB_TTL_MINUTES` | `60` | Cuánto se conservan los resultados |
 | `SPLITTER_MAX_QUEUE` | `20` | Trabajos que pueden esperar |
+| `SPLITTER_PARALLEL_JOBS` | `3` | Trabajos a la vez con Modal (con la GPU local siempre 1) |
+| `SPLITTER_MAX_CONTAINERS` | `3` | Solo al desplegar `modal_app.py`: tope de contenedores con GPU a la vez. Debe coincidir con el anterior |
 | `SPLITTER_MAX_AUDIO_MINUTES` | `10` | Duración máxima del audio (`0` = sin límite) |
 | `SPLITTER_MAX_JOBS_PER_HOUR` | `10` | Trabajos por persona (IP) por hora (`0` = sin límite). Se cuentan en memoria |
 | `SPLITTER_BEHIND_PROXY` | `0` | `1` solo si el backend está detrás de nginx/Caddy: usa la IP de `X-Forwarded-For` |

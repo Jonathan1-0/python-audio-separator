@@ -33,6 +33,11 @@ BEHIND_PROXY = os.getenv("SPLITTER_BEHIND_PROXY", "0") == "1"
 
 # Cuánto tiempo se conservan los resultados antes de borrarse.
 JOB_TTL_MINUTES = _int("SPLITTER_JOB_TTL_MINUTES", 60)
+# Trabajos que se separan al mismo tiempo con Modal (cada uno usa su propio contenedor con GPU).
+# Debe coincidir con el tope de contenedores del worker (SPLITTER_MAX_CONTAINERS en modal_app.py).
+# Con la GPU local siempre es 1.
+PARALLEL_JOBS = _int("SPLITTER_PARALLEL_JOBS", 3)
+
 # Cuántos trabajos pueden esperar en cola.
 MAX_QUEUE = _int("SPLITTER_MAX_QUEUE", 20)
 

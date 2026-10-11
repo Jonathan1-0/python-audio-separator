@@ -22,6 +22,9 @@ if GPU not in SUPPORTED_GPUS:
     raise ValueError(f"SPLITTER_GPU debe ser uno de {SUPPORTED_GPUS}, no {GPU!r}")
 
 APP_NAME = f"splitter-gpu-{GPU.lower()}"
+# Tope de contenedores (= GPUs cobrando) al mismo tiempo. Debe coincidir con SPLITTER_PARALLEL_JOBS
+# del backend; si llegan más trabajos, Modal los hace esperar.
+MAX_CONTAINERS = int(os.environ.get("SPLITTER_MAX_CONTAINERS", "3"))
 MODEL_DIR = "/models"
 
 image = (
@@ -34,6 +37,7 @@ image = (
         "SPLITTER_MODEL_DIR": MODEL_DIR,
         "SPLITTER_DATA_DIR": "/tmp/splitter",
         "SPLITTER_GPU": GPU,
+        "SPLITTER_MAX_CONTAINERS": str(MAX_CONTAINERS),
         "SPLITTER_AUTOCAST_2STEM": os.environ.get("SPLITTER_AUTOCAST_2STEM", "1"),
         "SPLITTER_MDXC_OVERLAP": os.environ.get("SPLITTER_MDXC_OVERLAP", "4"),
     })
@@ -48,6 +52,7 @@ app = modal.App(APP_NAME, image=image)
     gpu=GPU,
     volumes={MODEL_DIR: models},
     timeout=20 * 60,
+    max_containers=MAX_CONTAINERS,  # cada contenedor atiende un trabajo a la vez
     # El contenedor sigue vivo 2 min tras el último trabajo (modelo ya cargado). Esa espera se cobra:
     # en L4, 5 min costaban ~3 veces una canción; con 2 min un arranque en frío suma ~15-25 s.
     scaledown_window=2 * 60,

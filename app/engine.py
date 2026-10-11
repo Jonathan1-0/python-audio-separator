@@ -112,7 +112,9 @@ def _stem_from_filename(path: str, known: list[str]) -> Optional[str]:
 
 # ---------------------------------------------------------------------------
 class RealEngine:
-    """Mantiene un único Separator cargado en memoria (cargar el modelo es lo lento)."""
+    """Mantiene los Separator cargados en memoria (cargar el modelo es lo lento)."""
+
+    parallel_jobs = 1  # los Separator no se pueden usar desde dos hilos a la vez
 
     def __init__(self) -> None:
         # Un Separator por modelo, cargado una sola vez: así el preset "denoise", que usa dos
@@ -293,6 +295,7 @@ class ModalEngine:
     """Separa en la nube con Modal. Requiere `modal deploy modal_app.py` y el token de `modal setup`."""
 
     SEPARATION_SHARE = 0.7  # el resto de la barra es la descarga de las pistas
+    parallel_jobs = config.PARALLEL_JOBS  # cada trabajo corre en su propio contenedor
 
     def __init__(self, app_name: Optional[str] = None) -> None:
         import modal
@@ -300,6 +303,7 @@ class ModalEngine:
         self.app_name = app_name or config.MODAL_APP
         self._cls = modal.Cls.from_name(self.app_name, "Separator")
         # Estadísticas del último trabajo: tiempos que reporta el worker + lo medido desde aquí.
+        # Con trabajos en paralelo es "el último que terminó"; el benchmark corre de uno en uno.
         self.last_stats: Dict[str, float] = {}
 
     def device_info(self) -> dict:
@@ -358,6 +362,8 @@ class ModalEngine:
 # ---------------------------------------------------------------------------
 class FakeEngine:
     """Simula la separación: genera tonos distintos por stem y avanza el progreso poco a poco."""
+
+    parallel_jobs = config.PARALLEL_JOBS  # se comporta como Modal, para probar la cola
 
     def device_info(self) -> dict:
         return {"engine": "fake", "cuda": False, "device": "simulado"}
