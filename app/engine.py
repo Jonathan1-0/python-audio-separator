@@ -179,15 +179,21 @@ class RealEngine:
         names: Dict[str, str], on_progress: ProgressCb, timings: Dict[str, float],
     ) -> Dict[str, Path]:
         """Corre un modelo. `names` traduce la pista del modelo al nombre del archivo de salida
-        (audio-separator le quita los `_` y `.` de las orillas, así que no deben empezar con ellos)."""
+        (audio-separator le quita los `_` y `.` de las orillas, así que no deben empezar con ellos).
+        Si `names` tiene una sola pista y el modelo da más, solo se guarda esa."""
         t0 = time.perf_counter()
         sep = self._separator(model, out_dir, autocast)
         t1 = time.perf_counter()
+        inst = sep.model_instance
+        # Se cambia en la instancia (no en el Separator) porque el modelo puede estar compartido
+        # con otro preset que sí quiere todas las pistas; se restaura al terminar.
+        inst.output_single_stem = next(iter(names)) if len(names) == 1 else None
         _local.cb, _local.bars_fn, _local.bars, _local.bars_done = on_progress, lambda: self._expected_bars(sep), None, 0
         try:
             produced = sep.separate(str(input_path), custom_output_names=names)
         finally:
             _local.cb = None
+            inst.output_single_stem = None
         timings["load_seconds"] = timings.get("load_seconds", 0.0) + t1 - t0
         timings["separate_seconds"] = timings.get("separate_seconds", 0.0) + time.perf_counter() - t1
 
@@ -223,7 +229,7 @@ class RealEngine:
         self, spec: dict, input_path: Path, out_dir: Path, on_progress: ProgressCb, timings: Dict[str, float]
     ) -> Dict[str, Path]:
         """Varios modelos seguidos: cada paso recibe una pista del anterior (`input`).
-        Las pistas que llevan `into` se suman en ese stem final (p. ej. todo lo quitado -> "background")."""
+        Las pistas intermedias se borran; solo se entregan las de `stems` del preset."""
         steps = spec["steps"]
         produced: Dict[str, Path] = {}
         for i, step in enumerate(steps):
@@ -237,32 +243,10 @@ class RealEngine:
             ))
 
         result = {s: produced[s] for s in spec["stems"] if s in produced}
-        for stem, parts in spec.get("mix", {}).items():
-            result[stem] = _mix_wavs([produced[p] for p in parts], out_dir / f"{stem}.wav")
         for name, path in produced.items():  # pistas intermedias
             if name not in result:
                 path.unlink(missing_ok=True)
         return result
-
-
-def _mix_wavs(paths: list, dst: Path) -> Path:
-    """Suma varias pistas de la misma canción (mismo largo y sample rate, salen del mismo modelo)."""
-    import numpy as np
-    import soundfile as sf
-
-    total, rate = None, None
-    for p in paths:
-        data, sr = sf.read(str(p), dtype="float32", always_2d=True)
-        if total is None:
-            total, rate = data, sr
-        else:
-            n = min(len(total), len(data))
-            total = total[:n] + data[:n]
-    peak = float(np.max(np.abs(total))) if total.size else 0.0
-    if peak > 1.0:  # evitar que la suma sature
-        total = total / peak
-    sf.write(str(dst), total, rate, subtype="PCM_16")
-    return dst
 
 
 # ---------------------------------------------------------------------------

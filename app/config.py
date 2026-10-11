@@ -93,24 +93,22 @@ PRESETS = {
         "stems": ["vocals", "drums", "bass", "other"],
     },
     "denoise": {
-        "label": "Podcast: voz limpia (quita ruido y música de fondo)",
-        "stems": ["voice", "background"],
+        "label": "Limpiar ruido: deja solo la voz (quita música y ruido de fondo)",
+        "stems": ["voice"],
         # Dos modelos seguidos: primero se separa la voz de la música y luego se le quita el ruido
         # (el modelo de ruido está hecho para voces solas; sobre la mezcla completa se comía la música).
         "steps": [
             {
                 "model": "model_bs_roformer_ep_317_sdr_12.9755.ckpt",
                 "autocast": AUTOCAST_VOCALS,  # mismo modelo que 2stem: se carga una vez, debe ir igual
-                "stems": {"vocals": "voz_tmp", "instrumental": "musica_tmp"},
+                "stems": {"vocals": "voz_tmp"},  # solo se guarda la voz; la música no se usa
             },
             {
                 "input": "voz_tmp",
                 "model": "denoise_mel_band_roformer_aufr33_sdr_27.9959.ckpt",
-                "stems": {"dry": "voice", "other": "ruido_tmp"},
+                "stems": {"dry": "voice"},  # solo la voz limpia; el ruido no se guarda
             },
         ],
-        # Lo que se quitó (música + ruido) se entrega junto, por si el usuario lo quiere.
-        "mix": {"background": ["musica_tmp", "ruido_tmp"]},
     },
 }
 DEFAULT_PRESET = "2stem"

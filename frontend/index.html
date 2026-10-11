@@ -126,11 +126,11 @@ const $ = (id) => document.getElementById(id);
 const MODES = [
   { id: "vocals", title: "Separar voz y música", text: "Una pista con la voz y otra con la música sin voz.", presets: { fast: "2stem" }, button: "Separar" },
   { id: "instruments", title: "Separar instrumentos", text: "Voz, batería, bajo y el resto de instrumentos por separado.", presets: { fast: "4stem_fast", best: "4stem" }, button: "Separar" },
-  { id: "podcast", title: "Limpiar podcast", text: "Quita la música y el ruido de fondo y deja solo la voz.", presets: { fast: "denoise" }, button: "Limpiar audio" },
+  { id: "podcast", title: "Limpiar ruido", text: "Quita la música y el ruido de fondo y deja solo la voz.", presets: { fast: "denoise" }, button: "Limpiar audio" },
 ];
 const TRACK_NAMES = {
   vocals: "Voz", instrumental: "Música sin voz", drums: "Batería", bass: "Bajo", other: "Otros instrumentos",
-  voice: "Voz limpia", background: "Lo que se quitó (música y ruido)",
+  voice: "Voz limpia",
 };
 const FORMAT_NAMES = {
   mp3: "MP3 (recomendado)", wav: "WAV (máxima calidad, pesa más)", flac: "FLAC (máxima calidad, pesa menos que WAV)",
@@ -212,7 +212,8 @@ function renderTracks() {
     l.querySelector("span").textContent = trackName(s);
     $("tracks").append(l);
   }
-  $("tracksBox").hidden = false;
+  // Con una sola pista no hay nada que elegir (p. ej. limpiar ruido: solo la voz limpia).
+  $("tracksBox").hidden = stems.length < 2;
   updateButton();
 }
 $("tracks").onchange = updateButton;
