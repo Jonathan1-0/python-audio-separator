@@ -89,10 +89,15 @@ modal.com → Settings → Usage.
 
 Presets disponibles (se cambian en `app/config.py`):
 
-| preset  | modelo                                         | pistas                          |
-|---------|------------------------------------------------|---------------------------------|
-| `2stem` | `model_bs_roformer_ep_317_sdr_12.9755.ckpt`    | vocals, instrumental            |
-| `4stem` | `htdemucs_ft.yaml`                             | vocals, drums, bass, other      |
+| preset | modelo | pistas | tiempo en L4 (canción de 3:41) |
+|---|---|---|---|
+| `2stem` | `model_bs_roformer_ep_317_sdr_12.9755.ckpt` (autocast) | vocals, instrumental | ~97 s |
+| `4stem` | `htdemucs_ft.yaml` (lenta, mejor calidad) | vocals, drums, bass, other | ~48 s |
+| `4stem_fast` | `htdemucs.yaml` (rápida) | vocals, drums, bass, other | ~17 s |
+| `denoise` | podcasts: `model_bs_roformer…` y luego `denoise_mel_band_roformer_aufr33_sdr_27.9959.ckpt` sobre la voz | voice (voz limpia), background (música + ruido) | ~70 s por cada 90 s de audio |
+
+`denoise` encadena dos modelos (`steps` en `app/config.py`): el modelo de ruido está hecho para voces
+solas, y sobre una mezcla completa también quitaba reverberación y parte de la música.
 
 ## Contrato de la API (para el frontend)
 

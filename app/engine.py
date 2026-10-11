@@ -115,8 +115,9 @@ class RealEngine:
     """Mantiene un único Separator cargado en memoria (cargar el modelo es lo lento)."""
 
     def __init__(self) -> None:
-        self._sep = None
-        self._loaded_model: Optional[str] = None
+        # Un Separator por modelo, cargado una sola vez: así el preset "denoise", que usa dos
+        # modelos seguidos, no recarga en cada trabajo (cargar el modelo es lo lento).
+        self._seps: Dict[str, object] = {}
         # Tiempos del último trabajo (los usa el worker de Modal para calcular costos).
         # Ojo: demucs carga sus pesos dentro de separate(), así que en 4stem eso cae en separate_seconds.
         self.last_timings: Dict[str, float] = {}
@@ -132,16 +133,19 @@ class RealEngine:
             pass
         return info
 
-    def _ensure_model(self, model: str, out_dir: Path, autocast: bool = False) -> None:
-        if self._sep is None:
+    def _separator(self, model: str, out_dir: Path, autocast: bool = False):
+        sep = self._seps.get(model)
+        if sep is None:
             from audio_separator.separator import Separator
 
             config.MODEL_DIR.mkdir(parents=True, exist_ok=True)
-            self._sep = Separator(
+            sep = Separator(
                 model_file_dir=str(config.MODEL_DIR),
                 output_dir=str(out_dir),
                 output_format="WAV",  # siempre WAV sin pérdida; se convierte al descargar
                 log_level=logging.INFO,
+                # La precisión se decide al cargar el modelo, así que puede ser distinta por preset.
+                use_autocast=autocast,
                 mdxc_params={
                     "segment_size": 256,
                     "override_model_segment_size": False,
@@ -150,53 +154,113 @@ class RealEngine:
                     "pitch_shift": 0,
                 },
             )
-        if self._loaded_model != model:
             log.info("Cargando modelo %s (autocast=%s)", model, autocast)
-            # La precisión se decide al cargar el modelo, así que puede ser distinta por preset.
-            self._sep.use_autocast = autocast
-            self._sep.load_model(model_filename=model)
-            self._loaded_model = model
+            sep.load_model(model_filename=model)
+            self._seps[model] = sep
+        # Redirigir la salida de este trabajo a su carpeta (mismo patrón que usa la librería).
+        sep.output_dir = str(out_dir)
+        if getattr(sep, "model_instance", None) is not None:
+            sep.model_instance.output_dir = str(out_dir)
+        return sep
 
-    def _expected_bars(self) -> int:
+    @staticmethod
+    def _expected_bars(sep) -> int:
         """Demucs hace una pasada (una barra de tqdm) por cada submodelo del bag y cada shift."""
-        inst = getattr(self._sep, "model_instance", None)
+        inst = getattr(sep, "model_instance", None)
         demucs = getattr(inst, "demucs_model_instance", None)
         if demucs is None:
             return 1
         return max(1, len(getattr(demucs, "models", ()))) * max(1, getattr(inst, "shifts", 1))
 
-    def separate(self, input_path: Path, out_dir: Path, preset: str, on_progress: ProgressCb) -> Dict[str, Path]:
-        spec = config.PRESETS[preset]
-        out_dir.mkdir(parents=True, exist_ok=True)
-        _patch_tqdm()
+    def _run_model(
+        self, model: str, autocast: bool, input_path: Path, out_dir: Path,
+        names: Dict[str, str], on_progress: ProgressCb, timings: Dict[str, float],
+    ) -> Dict[str, Path]:
+        """Corre un modelo. `names` traduce la pista del modelo al nombre del archivo de salida
+        (audio-separator le quita los `_` y `.` de las orillas, así que no deben empezar con ellos)."""
         t0 = time.perf_counter()
-        self._ensure_model(spec["model"], out_dir, spec.get("autocast", False))
+        sep = self._separator(model, out_dir, autocast)
         t1 = time.perf_counter()
-
-        # Redirigir la salida de este trabajo a su carpeta (mismo patrón que usa la librería).
-        self._sep.output_dir = str(out_dir)
-        if getattr(self._sep, "model_instance", None) is not None:
-            self._sep.model_instance.output_dir = str(out_dir)
-
-        custom_names = {s.capitalize(): s for s in spec["stems"]}
-        _local.cb, _local.bars_fn, _local.bars, _local.bars_done = on_progress, self._expected_bars, None, 0
+        _local.cb, _local.bars_fn, _local.bars, _local.bars_done = on_progress, lambda: self._expected_bars(sep), None, 0
         try:
-            produced = self._sep.separate(str(input_path), custom_output_names=custom_names)
+            produced = sep.separate(str(input_path), custom_output_names=names)
         finally:
             _local.cb = None
-        self.last_timings = {"load_seconds": t1 - t0, "separate_seconds": time.perf_counter() - t1}
+        timings["load_seconds"] = timings.get("load_seconds", 0.0) + t1 - t0
+        timings["separate_seconds"] = timings.get("separate_seconds", 0.0) + time.perf_counter() - t1
 
         result: Dict[str, Path] = {}
         for p in produced:
             path = Path(p)
             if not path.is_absolute():
                 path = out_dir / path.name if not path.exists() else path
-            stem = _stem_from_filename(str(path), spec["stems"])
+            stem = _stem_from_filename(str(path), list(names.values()))
             if stem and path.exists():
                 result[stem] = path
+        return result
+
+    def separate(self, input_path: Path, out_dir: Path, preset: str, on_progress: ProgressCb) -> Dict[str, Path]:
+        spec = config.PRESETS[preset]
+        out_dir.mkdir(parents=True, exist_ok=True)
+        _patch_tqdm()
+        timings: Dict[str, float] = {}
+        if "steps" in spec:
+            result = self._separate_steps(spec, input_path, out_dir, on_progress, timings)
+        else:
+            # Nombre de la pista en el modelo -> nombre que ve la página (y nombre del archivo de salida).
+            names = spec.get("model_stems") or {s: s for s in spec["stems"]}
+            result = self._run_model(
+                spec["model"], spec.get("autocast", False), input_path, out_dir, names, on_progress, timings
+            )
+        self.last_timings = timings
         if not result:
             raise RuntimeError("El modelo no produjo ningún archivo de salida reconocible.")
         return result
+
+    def _separate_steps(
+        self, spec: dict, input_path: Path, out_dir: Path, on_progress: ProgressCb, timings: Dict[str, float]
+    ) -> Dict[str, Path]:
+        """Varios modelos seguidos: cada paso recibe una pista del anterior (`input`).
+        Las pistas que llevan `into` se suman en ese stem final (p. ej. todo lo quitado -> "background")."""
+        steps = spec["steps"]
+        produced: Dict[str, Path] = {}
+        for i, step in enumerate(steps):
+            src = input_path if i == 0 else produced[step["input"]]
+
+            def progress(f: float, i: int = i) -> None:
+                on_progress((i + f) / len(steps))
+
+            produced.update(self._run_model(
+                step["model"], step.get("autocast", False), src, out_dir, step["stems"], progress, timings
+            ))
+
+        result = {s: produced[s] for s in spec["stems"] if s in produced}
+        for stem, parts in spec.get("mix", {}).items():
+            result[stem] = _mix_wavs([produced[p] for p in parts], out_dir / f"{stem}.wav")
+        for name, path in produced.items():  # pistas intermedias
+            if name not in result:
+                path.unlink(missing_ok=True)
+        return result
+
+
+def _mix_wavs(paths: list, dst: Path) -> Path:
+    """Suma varias pistas de la misma canción (mismo largo y sample rate, salen del mismo modelo)."""
+    import numpy as np
+    import soundfile as sf
+
+    total, rate = None, None
+    for p in paths:
+        data, sr = sf.read(str(p), dtype="float32", always_2d=True)
+        if total is None:
+            total, rate = data, sr
+        else:
+            n = min(len(total), len(data))
+            total = total[:n] + data[:n]
+    peak = float(np.max(np.abs(total))) if total.size else 0.0
+    if peak > 1.0:  # evitar que la suma sature
+        total = total / peak
+    sf.write(str(dst), total, rate, subtype="PCM_16")
+    return dst
 
 
 # ---------------------------------------------------------------------------

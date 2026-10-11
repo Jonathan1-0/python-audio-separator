@@ -93,7 +93,7 @@ def estimate(songs: dict[Path, float], gpus, presets, warm_runs: int) -> float:
         price = config.GPU_PRICE_PER_SECOND[gpu]
         secs = EST_IDLE_TAIL_S
         for preset in presets:
-            rate = EST_GPU_SECONDS_PER_AUDIO_SECOND[(gpu, preset)]
+            rate = EST_GPU_SECONDS_PER_AUDIO_SECOND.get((gpu, preset), 1.0)  # preset sin medir: conservador
             secs += EST_COLD_OVERHEAD_S + shortest * rate + EST_RUN_OVERHEAD_S
             secs += sum(warm_runs * (dur * rate + EST_RUN_OVERHEAD_S) for dur in songs.values())
         cost = secs * price

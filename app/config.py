@@ -55,19 +55,47 @@ OUTPUT_FORMATS = {
 # Calidad de la vista previa (MP3 ligero para que cargue rápido).
 PREVIEW_BITRATE = "128k"
 
+# Precisión mixta (PyTorch autocast) para el modelo de voz (BS-Roformer): ~2× más rápido en GPU,
+# diferencia de calidad mínima. Lo usan "2stem" y el primer paso de "denoise".
+AUTOCAST_VOCALS = os.getenv("SPLITTER_AUTOCAST_2STEM", "1") == "1"
+
 # Modelos disponibles. La clave es lo que manda la página en el campo "preset".
 PRESETS = {
     "2stem": {
         "label": "Voz e instrumental",
         "model": "model_bs_roformer_ep_317_sdr_12.9755.ckpt",
         "stems": ["vocals", "instrumental"],
-        # Precisión mixta (PyTorch autocast) en la GPU: más rápido, diferencia de calidad mínima.
-        "autocast": os.getenv("SPLITTER_AUTOCAST_2STEM", "1") == "1",
+        "autocast": AUTOCAST_VOCALS,
     },
     "4stem": {
-        "label": "Voz, batería, bajo y otros",
-        "model": "htdemucs_ft.yaml",
+        "label": "Voz, batería, bajo y otros (lenta, mejor calidad)",
+        "model": "htdemucs_ft.yaml",  # 4 modelos combinados
         "stems": ["vocals", "drums", "bass", "other"],
+    },
+    "4stem_fast": {
+        "label": "Voz, batería, bajo y otros (rápida)",
+        "model": "htdemucs.yaml",  # un solo modelo: ~4 veces menos trabajo, algo menos de calidad
+        "stems": ["vocals", "drums", "bass", "other"],
+    },
+    "denoise": {
+        "label": "Podcast: voz limpia (quita ruido y música de fondo)",
+        "stems": ["voice", "background"],
+        # Dos modelos seguidos: primero se separa la voz de la música y luego se le quita el ruido
+        # (el modelo de ruido está hecho para voces solas; sobre la mezcla completa se comía la música).
+        "steps": [
+            {
+                "model": "model_bs_roformer_ep_317_sdr_12.9755.ckpt",
+                "autocast": AUTOCAST_VOCALS,  # mismo modelo que 2stem: se carga una vez, debe ir igual
+                "stems": {"vocals": "voz_tmp", "instrumental": "musica_tmp"},
+            },
+            {
+                "input": "voz_tmp",
+                "model": "denoise_mel_band_roformer_aufr33_sdr_27.9959.ckpt",
+                "stems": {"dry": "voice", "other": "ruido_tmp"},
+            },
+        ],
+        # Lo que se quitó (música + ruido) se entrega junto, por si el usuario lo quiere.
+        "mix": {"background": ["musica_tmp", "ruido_tmp"]},
     },
 }
 DEFAULT_PRESET = "2stem"
