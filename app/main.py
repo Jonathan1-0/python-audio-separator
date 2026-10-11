@@ -21,12 +21,14 @@ from fastapi.staticfiles import StaticFiles
 from . import config, media
 from .engine import build_engine
 from .jobs import DONE, ERROR, Job, JobManager
+from .ratelimit import RateLimiter
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("splitter.api")
 
 engine = build_engine()
 manager = JobManager(engine)
+limiter = RateLimiter(config.MAX_JOBS_PER_HOUR, 3600)
 
 
 @asynccontextmanager
@@ -53,6 +55,14 @@ def _safe_base_name(filename: str) -> str:
     stem = Path(filename).stem
     cleaned = re.sub(r"[^\w\- .()\[\]]", "_", stem, flags=re.UNICODE).strip(" .")
     return cleaned[:80] or "audio"
+
+
+def _client_ip(request: Request) -> str:
+    if config.BEHIND_PROXY:
+        forwarded = request.headers.get("x-forwarded-for", "")
+        if forwarded:
+            return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "desconocido"
 
 
 def _job_or_404(job_id: str) -> Job:
@@ -128,7 +138,26 @@ def get_config():
         "default_preset": config.DEFAULT_PRESET,
         "presets": {k: {"label": v["label"], "stems": v["stems"]} for k, v in config.PRESETS.items()},
         "results_kept_minutes": config.JOB_TTL_MINUTES,
+        "max_audio_minutes": config.MAX_AUDIO_MINUTES or None,  # None = sin límite
+        "max_jobs_per_hour": config.MAX_JOBS_PER_HOUR or None,
     }
+
+
+async def _check_duration(path: Path) -> None:
+    """Rechaza lo que no es audio legible y lo que pasa del límite de minutos."""
+    if not media.ffprobe_available():
+        log.warning("ffprobe no está instalado: no se valida la duración del audio")
+        return
+    try:
+        seconds = await run_in_threadpool(media.audio_duration, path)
+    except ValueError as exc:
+        log.info("Audio ilegible (%s): %s", path.name, exc)
+        raise HTTPException(415, "No se pudo leer el audio. Revisa que el archivo no esté dañado.")
+    if config.MAX_AUDIO_MINUTES and seconds > config.MAX_AUDIO_MINUTES * 60:
+        raise HTTPException(
+            413,
+            f"El audio dura {int(seconds // 60)}:{int(seconds % 60):02d} y el límite es de {config.MAX_AUDIO_MINUTES} min.",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -158,6 +187,17 @@ async def create_job(
     if declared and declared.isdigit() and int(declared) > config.MAX_UPLOAD_BYTES + 1024 * 1024:
         raise HTTPException(413, f"El archivo supera el límite de {config.MAX_UPLOAD_MB} MB.")
 
+    ip = _client_ip(request)
+    wait = limiter.acquire(ip)
+    if wait:
+        minutes = max(1, round(wait / 60))
+        raise HTTPException(
+            429,
+            f"Llegaste al límite de {config.MAX_JOBS_PER_HOUR} trabajos por hora. "
+            f"Podrás mandar otro en {minutes} min.",
+            headers={"Retry-After": str(int(wait) + 1)},
+        )
+
     job_id, job_dir = manager.new_job_dir()
     input_path = job_dir / f"input{ext}"
     size = 0
@@ -170,10 +210,12 @@ async def create_job(
                 out.write(chunk)
         if size == 0:
             raise HTTPException(400, "El archivo está vacío.")
+        await _check_duration(input_path)
     except HTTPException:
         import shutil
 
         shutil.rmtree(job_dir, ignore_errors=True)
+        limiter.release(ip)  # un archivo rechazado no cuenta para el límite
         raise
 
     job = Job(
@@ -190,6 +232,7 @@ async def create_job(
         import shutil
 
         shutil.rmtree(job_dir, ignore_errors=True)
+        limiter.release(ip)
         raise HTTPException(503, "El servicio está muy ocupado. Intenta de nuevo en unos minutos.")
     return _public(job)
 

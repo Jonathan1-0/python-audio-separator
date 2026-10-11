@@ -40,6 +40,26 @@ def ffmpeg_available() -> bool:
     return shutil.which("ffmpeg") is not None
 
 
+def ffprobe_available() -> bool:
+    return shutil.which("ffprobe") is not None
+
+
+def audio_duration(path: Path) -> float:
+    """Duración en segundos según ffprobe. Lanza ValueError si el archivo no es audio legible."""
+    proc = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries", "format=duration",
+         "-of", "default=noprint_wrappers=1:nokey=1", str(path)],
+        capture_output=True, text=True, timeout=60,
+    )
+    try:
+        seconds = float(proc.stdout.strip())
+    except ValueError:
+        raise ValueError(proc.stderr.strip()[:200] or "sin pista de audio") from None
+    if proc.returncode != 0 or seconds <= 0:
+        raise ValueError(proc.stderr.strip()[:200] or "duración inválida")
+    return seconds
+
+
 def convert(src: Path, fmt: str, *, preview: bool = False) -> Path:
     """Convierte `src` (WAV) a `fmt` y deja el resultado junto al original como caché."""
     fmt = fmt.lower()

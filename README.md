@@ -141,7 +141,8 @@ Todas las rutas empiezan con `/api`. Errores: JSON `{"detail": "mensaje en espa�
 | GET | `/api/jobs/{id}/download?format=mp3` | Todas las pistas elegidas en un ZIP |
 | DELETE | `/api/jobs/{id}` | Borrar los archivos |
 
-Códigos útiles: `413` archivo muy grande · `415` tipo no soportado · `400` pista/formato inválido · `503` cola llena · `404` trabajo expirado.
+Códigos útiles: `413` archivo muy grande o audio más largo que el límite de minutos · `415` tipo no soportado o audio ilegible · `429` límite de trabajos por hora (con encabezado `Retry-After` en segundos) · `400` pista/formato inválido · `503` cola llena · `404` trabajo expirado.
+`GET /api/config` también informa `max_audio_minutes` y `max_jobs_per_hour` (`null` = sin límite) para mostrarlos en la página.
 
 Objeto de trabajo (lo que devuelven `POST`, `GET` y cada evento):
 
@@ -198,6 +199,9 @@ es.addEventListener("update", (e) => {
 | `SPLITTER_MAX_UPLOAD_MB` | `100` | Límite de tamaño de archivo |
 | `SPLITTER_JOB_TTL_MINUTES` | `60` | Cuánto se conservan los resultados |
 | `SPLITTER_MAX_QUEUE` | `20` | Trabajos que pueden esperar |
+| `SPLITTER_MAX_AUDIO_MINUTES` | `10` | Duración máxima del audio (`0` = sin límite) |
+| `SPLITTER_MAX_JOBS_PER_HOUR` | `10` | Trabajos por persona (IP) por hora (`0` = sin límite). Se cuentan en memoria |
+| `SPLITTER_BEHIND_PROXY` | `0` | `1` solo si el backend está detrás de nginx/Caddy: usa la IP de `X-Forwarded-For` |
 | `SPLITTER_ALLOWED_ORIGINS` | `*` | Dominios de la página (CORS). En producción pon el real |
 | `SPLITTER_ENGINE` | `real` | `modal` para separar en Modal, `fake` para simular |
 | `SPLITTER_MODAL_APP` | `splitter-gpu-l4` | App de Modal a usar (`splitter-gpu-l4` o `splitter-gpu-t4`) |
@@ -211,5 +215,5 @@ es.addEventListener("update", (e) => {
 ## Pendiente para antes de publicar en internet
 
 - Poner el backend detrás de HTTPS (nginx/Caddy) y restringir `SPLITTER_ALLOWED_ORIGINS`.
-- Agregar límite de peticiones por IP y, si quieren, cuentas de usuario.
+- Límites por duración y por IP: hechos. Detrás de un proxy, poner `SPLITTER_BEHIND_PROXY=1` o todos los usuarios compartirían el mismo límite. Si quieren, cuentas de usuario.
 - Los trabajos viven en memoria: si se reinicia el servidor, se pierden los que estaban en curso.

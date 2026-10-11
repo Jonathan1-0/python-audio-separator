@@ -21,6 +21,16 @@ MODEL_DIR = Path(os.getenv("SPLITTER_MODEL_DIR", BASE_DIR / "models")).resolve()
 MAX_UPLOAD_MB = _int("SPLITTER_MAX_UPLOAD_MB", 100)
 MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
 
+# Duración máxima del audio (minutos). Protege el crédito de la GPU: el tamaño no basta,
+# un MP3 de 100 MB puede durar más de una hora. 0 = sin límite.
+MAX_AUDIO_MINUTES = _int("SPLITTER_MAX_AUDIO_MINUTES", 10)
+# Trabajos que una misma persona (IP) puede mandar por hora. 0 = sin límite.
+MAX_JOBS_PER_HOUR = _int("SPLITTER_MAX_JOBS_PER_HOUR", 10)
+# Detrás de un proxy (nginx, Caddy...) todas las peticiones llegan desde la IP del proxy;
+# con 1 se usa la IP del usuario que el proxy pone en X-Forwarded-For. Solo activarlo detrás de un proxy,
+# porque sin él cualquiera podría inventarse ese encabezado y saltarse el límite.
+BEHIND_PROXY = os.getenv("SPLITTER_BEHIND_PROXY", "0") == "1"
+
 # Cuánto tiempo se conservan los resultados antes de borrarse.
 JOB_TTL_MINUTES = _int("SPLITTER_JOB_TTL_MINUTES", 60)
 # Cuántos trabajos pueden esperar en cola.

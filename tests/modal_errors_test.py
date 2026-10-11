@@ -10,7 +10,9 @@ import os
 import shutil
 import sys
 import tempfile
+import io
 import time
+import wave
 from pathlib import Path
 
 os.environ["SPLITTER_ENGINE"] = "fake"  # la app arranca con el simulado; luego se cambia el motor
@@ -86,7 +88,10 @@ except SeparationError as err:
 # De punta a punta por la API: lo que ve la página en `error`.
 with TestClient(main.app) as client:
     main.manager.engine = engine_that_raises(me.FunctionTimeoutError("Function timed out after 1200s"))
-    r = client.post("/api/jobs", files={"file": ("a.wav", b"RIFF" + b"\0" * 2000, "audio/wav")})
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1), w.setsampwidth(2), w.setframerate(8000), w.writeframes(b"\0\0" * 8000)
+    r = client.post("/api/jobs", files={"file": ("a.wav", buf.getvalue(), "audio/wav")})
     check(r.status_code == 202, f"POST /api/jobs -> {r.status_code}")
     job_id = r.json()["id"]
     for _ in range(50):
