@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Splitter — prueba</title>
+<link rel="icon" href="data:,">
+<style>
+  :root { --bg:#14161a; --panel:#1d2026; --line:#2e323a; --text:#e6e8eb; --muted:#9097a1; --accent:#5b9dff; --err:#ff6b6b; --ok:#4cc38a; }
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:15px/1.5 system-ui, sans-serif; }
+  main { max-width:640px; margin:0 auto; padding:24px 16px 48px; }
+  h1 { font-size:20px; margin:0 0 4px; }
+  .muted { color:var(--muted); font-size:13px; }
+  section { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:16px; margin-top:16px; }
+  #drop { border:2px dashed var(--line); border-radius:8px; padding:28px 12px; text-align:center; cursor:pointer; }
+  #drop.over { border-color:var(--accent); background:#5b9dff14; }
+  #fileName { margin-top:8px; font-weight:600; word-break:break-all; }
+  label { display:inline-flex; align-items:center; gap:6px; margin:4px 14px 4px 0; }
+  select, button { font:inherit; color:var(--text); background:#262a31; border:1px solid var(--line); border-radius:6px; padding:6px 10px; }
+  button { cursor:pointer; }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#0b1220; font-weight:600; padding:8px 18px; }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  .row { margin-top:12px; }
+  .bar { height:10px; background:#262a31; border-radius:5px; overflow:hidden; margin:8px 0; }
+  .bar > div { height:100%; width:0; background:var(--accent); transition:width .3s; }
+  .bar.indet > div { width:30%; animation:slide 1.2s infinite linear; }
+  @keyframes slide { from { margin-left:-30%; } to { margin-left:100%; } }
+  .error { color:var(--err); background:#ff6b6b18; border:1px solid #ff6b6b55; border-radius:6px; padding:8px 10px; margin-top:12px; }
+  .stem { border-top:1px solid var(--line); padding:10px 0; }
+  .stem:first-child { border-top:0; }
+  .stem audio { width:100%; margin:4px 0; }
+  a { color:var(--accent); }
+  a.btn { display:inline-block; margin-left:8px; padding:6px 12px; border:1px solid var(--accent); border-radius:6px; text-decoration:none; }
+  [hidden] { display:none !important; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Splitter — página de prueba</h1>
+  <div class="muted" id="limits">Cargando configuración…</div>
+
+  <section>
+    <div id="drop">
+      Arrastra un archivo de audio aquí o <button type="button" id="pick">Elegir archivo</button>
+      <input type="file" id="file" hidden>
+      <div id="fileName"></div>
+    </div>
+
+    <div class="row">
+      Preset: <select id="preset"></select>
+    </div>
+    <div class="row" id="stems"></div>
+
+    <div class="row">
+      <button class="primary" id="go" disabled>Separar</button>
+    </div>
+    <div class="error" id="error" hidden></div>
+  </section>
+
+  <section id="progress" hidden>
+    <div id="status">En cola…</div>
+    <div class="bar" id="bar"><div></div></div>
+    <div class="muted" id="detail"></div>
+  </section>
+
+  <section id="results" hidden>
+    <div class="row" style="margin-top:0">
+      Formato de descarga: <select id="format"></select>
+      <a id="zip" class="btn" href="#" download>Descargar todo (ZIP)</a>
+    </div>
+    <div id="stemList" class="row"></div>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let cfg = null, file = null, es = null, lastJob = null;
+
+function showError(msg) { $("error").textContent = msg; $("error").hidden = !msg; }
+
+async function errorDetail(res) {
+  try { const j = await res.json(); if (j.detail) return typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail); } catch {}
+  return `Error ${res.status} ${res.statusText}`;
+}
+
+// 1) Configuración
+async function loadConfig() {
+  try {
+    const res = await fetch("/api/config");
+    if (!res.ok) throw new Error(await errorDetail(res));
+    cfg = await res.json();
+  } catch (e) { showError("No se pudo cargar /api/config: " + e.message); $("limits").textContent = ""; return; }
+
+  $("limits").textContent = `Máx. ${cfg.max_upload_mb} MB · Formatos: ${cfg.accepted_extensions.join(", ")}`;
+  $("file").accept = cfg.accepted_extensions.join(",");
+  for (const [key, p] of Object.entries(cfg.presets)) $("preset").add(new Option(`${key} — ${p.label}`, key));
+  $("preset").value = cfg.default_preset;
+  for (const f of cfg.output_formats) $("format").add(new Option(f, f));
+  $("format").value = cfg.output_formats.includes("mp3") ? "mp3" : cfg.output_formats[0];
+  renderStems();
+}
+
+// 3) Casillas según preset
+function renderStems() {
+  const stems = cfg.presets[$("preset").value].stems;
+  $("stems").innerHTML = "Pistas: ";
+  for (const s of stems) {
+    const l = document.createElement("label");
+    l.innerHTML = `<input type="checkbox" value="${s}" checked> ${s}`;
+    $("stems").append(l);
+  }
+  updateButton();
+}
+$("preset").onchange = renderStems;
+$("stems").onchange = updateButton;
+
+function selectedStems() { return [...$("stems").querySelectorAll("input:checked")].map((c) => c.value); }
+function updateButton() { $("go").disabled = !cfg || !file || selectedStems().length === 0 || (es !== null); }
+
+// 2) Archivo: drag & drop + selector, con validación
+function setFile(f) {
+  showError("");
+  file = null; $("fileName").textContent = "";
+  if (f) {
+    const ext = f.name.includes(".") ? "." + f.name.split(".").pop().toLowerCase() : "";
+    if (!cfg.accepted_extensions.includes(ext)) showError(`Tipo no soportado (${ext || "sin extensión"}). Acepta: ${cfg.accepted_extensions.join(", ")}`);
+    else if (f.size > cfg.max_upload_mb * 1024 * 1024) showError(`El archivo pesa ${(f.size / 1048576).toFixed(1)} MB; el límite es ${cfg.max_upload_mb} MB.`);
+    else { file = f; $("fileName").textContent = `${f.name} (${(f.size / 1048576).toFixed(2)} MB)`; }
+  }
+  updateButton();
+}
+$("pick").onclick = (e) => { e.stopPropagation(); $("file").click(); };
+$("drop").onclick = () => $("file").click();
+$("file").onchange = () => { setFile($("file").files[0]); $("file").value = ""; };
+$("drop").ondragover = (e) => { e.preventDefault(); $("drop").classList.add("over"); };
+$("drop").ondragleave = () => $("drop").classList.remove("over");
+$("drop").ondrop = (e) => { e.preventDefault(); $("drop").classList.remove("over"); if (cfg) setFile(e.dataTransfer.files[0]); };
+
+// 4) Subir y seguir el progreso
+$("go").onclick = async () => {
+  showError("");
+  $("results").hidden = true;
+  $("go").disabled = true;
+  const fd = new FormData();
+  fd.append("file", file);
+  fd.append("preset", $("preset").value);
+  fd.append("stems", selectedStems().join(","));
+  showProgress({ status: "queued", progress: 0, message: "Subiendo archivo…" });
+
+  let job;
+  try {
+    const res = await fetch("/api/jobs", { method: "POST", body: fd });
+    if (!res.ok) throw new Error(await errorDetail(res));
+    job = await res.json();
+  } catch (e) { $("progress").hidden = true; showError(e.message); updateButton(); return; }
+
+  showProgress(job);
+  es = new EventSource(`/api/jobs/${job.id}/events`);
+  es.addEventListener("update", (ev) => {
+    const j = JSON.parse(ev.data);
+    showProgress(j);
+    if (j.status === "done") { closeES(); showResults(j); }
+    else if (j.status === "error") { closeES(); showError(j.error || j.message || "Error al procesar el audio."); }
+  });
+  es.addEventListener("gone", () => { closeES(); showError("El trabajo ya no existe o expiró."); });
+  es.onerror = () => { if (es && es.readyState === EventSource.CLOSED) { closeES(); showError("Se perdió la conexión con el servidor."); } };
+  updateButton();
+};
+
+function closeES() { if (es) { es.close(); es = null; } updateButton(); }
+
+function showProgress(j) {
+  $("progress").hidden = false;
+  const bar = $("bar"), fill = bar.firstElementChild;
+  const indet = j.progress == null && j.status !== "done" && j.status !== "error";
+  bar.classList.toggle("indet", indet);
+  const pct = j.status === "done" ? 100 : Math.round((j.progress || 0) * 100);
+  fill.style.width = indet ? "" : pct + "%";
+  fill.style.background = j.status === "error" ? "var(--err)" : j.status === "done" ? "var(--ok)" : "";
+  const labels = { queued: "En cola", processing: "Procesando", done: "Listo", error: "Error" };
+  $("status").textContent = `${labels[j.status] || j.status}${indet ? "" : ` — ${pct}%`}`;
+  const parts = [];
+  if (j.message) parts.push(j.message);
+  if (j.queue_position != null) parts.push(`Posición en cola: ${j.queue_position}`);
+  $("detail").textContent = parts.join(" · ");
+}
+
+// 5) Resultados
+function showResults(j) {
+  lastJob = j;
+  const list = $("stemList");
+  list.innerHTML = "";
+  for (const s of j.stems) {
+    const div = document.createElement("div");
+    div.className = "stem";
+    div.innerHTML = `<strong></strong><audio controls preload="none"></audio><a download>Descargar</a>`;
+    div.querySelector("strong").textContent = s.name;
+    div.querySelector("audio").src = s.preview_url;
+    div.querySelector("a").dataset.base = s.download_url;
+    list.append(div);
+  }
+  updateLinks();
+  $("results").hidden = false;
+}
+function updateLinks() {
+  if (!lastJob) return;
+  const fmt = $("format").value;
+  for (const a of $("stemList").querySelectorAll("a")) {
+    a.href = `${a.dataset.base}?format=${fmt}`;
+    a.textContent = `Descargar (${fmt})`;
+  }
+  $("zip").href = `${lastJob.download_all_url}?format=${fmt}`;
+}
+$("format").onchange = updateLinks;
+
+loadConfig();
+</script>
+</body>
+</html>
