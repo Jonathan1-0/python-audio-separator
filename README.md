@@ -42,6 +42,7 @@ En **Windows** (Jonathan): igual, pero `.venv\Scripts\activate` y ffmpeg desde <
 SPLITTER_ENGINE=fake uvicorn app.main:app --reload --port 8000
 python tests/smoke_test.py         # prueba de punta a punta
 python tests/concurrency_test.py   # descargas simultáneas de la misma pista
+python tests/modal_errors_test.py  # los fallos de Modal llegan a la página con mensajes entendibles
 ```
 
 El modo `fake` genera tonos de prueba; sirve para desarrollar el frontend sin esperar a los modelos.
@@ -68,6 +69,32 @@ SPLITTER_GPU=L4 modal deploy modal_app.py            # y otra vez cada que cambi
 SPLITTER_GPU=T4 modal deploy modal_app.py
 SPLITTER_ENGINE=modal SPLITTER_MODAL_APP=splitter-gpu-l4 uvicorn app.main:app --port 8000
 ```
+
+### Probar con Modal desde otra computadora (p. ej. Jonathan en Windows)
+
+Las apps de Modal ya están desplegadas en el workspace de Diego; para separar desde otra
+computadora no hay que desplegar nada, solo conectarse a ese workspace.
+
+1. Clonar el repo, crear el entorno e instalar: `pip install -r requirements.txt` (ya incluye `modal`).
+   No hace falta `audio-separator` ni GPU: la separación corre en Modal.
+2. Instalar `ffmpeg` (`winget install ffmpeg` en Windows).
+3. Credenciales de Modal: Diego crea un token en modal.com → Settings → API Tokens y se lo pasa;
+   en la otra computadora: `modal token set --token-id <id> --token-secret <secret>`.
+   (Un token propio por persona se puede revocar sin afectar a los demás.)
+4. Arrancar y abrir <http://localhost:8000>:
+
+```powershell
+# Windows (PowerShell)
+$env:SPLITTER_ENGINE="modal"; $env:SPLITTER_FRONTEND_DIR="frontend"
+uvicorn app.main:app --port 8000
+```
+```bash
+# Linux / macOS
+SPLITTER_ENGINE=modal SPLITTER_FRONTEND_DIR=frontend uvicorn app.main:app --port 8000
+```
+
+Cada separación gasta el crédito de Modal del workspace (~$0.01–0.03 por canción en L4).
+Para trabajar solo en la página sin gastar, usar `SPLITTER_ENGINE=fake`.
 
 ### Comparar T4 contra L4
 

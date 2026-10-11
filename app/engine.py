@@ -264,6 +264,31 @@ def _mix_wavs(paths: list, dst: Path) -> Path:
 
 
 # ---------------------------------------------------------------------------
+class SeparationError(RuntimeError):
+    """Error con un mensaje pensado para mostrarse tal cual en la página."""
+
+
+def _friendly_modal_error(exc: BaseException) -> str:
+    import modal.exception as me
+
+    text = str(exc).lower()
+    if isinstance(exc, (me.ResourceExhaustedError,)) or any(
+        w in text for w in ("billing", "spend limit", "credit", "quota")
+    ):
+        return "El servicio de separación llegó a su límite de uso. Intenta de nuevo más tarde."
+    if isinstance(exc, (me.TimeoutError, TimeoutError)):
+        return "El audio tardó demasiado en procesarse. Prueba con un archivo más corto."
+    if isinstance(exc, me.RequestSizeError):
+        return "El archivo es demasiado grande para el servicio de separación. Prueba con uno más pequeño."
+    if isinstance(exc, (me.NotFoundError, me.AuthError, me.PermissionDeniedError)):
+        # Problema de configuración (app no desplegada, token inválido): el detalle queda en el log.
+        return "El servicio de separación no está disponible en este momento."
+    if isinstance(exc, (me.ConnectionError, me.ServiceError, me.InternalError, me.InternalFailure, ConnectionError)):
+        return "No se pudo conectar con el servicio de separación. Intenta de nuevo en unos minutos."
+    return "No se pudo procesar el audio. Si el archivo se reproduce bien, intenta de nuevo más tarde."
+
+
+# ---------------------------------------------------------------------------
 class ModalEngine:
     """Separa en la nube con Modal. Requiere `modal deploy modal_app.py` y el token de `modal setup`."""
 
@@ -292,30 +317,34 @@ class ModalEngine:
         audio = input_path.read_bytes()
         bytes_received = 0
         started = time.perf_counter()
-        remote = self._cls().separate.remote_gen(audio, input_path.name, preset)
-        for event in remote:
-            kind = event["type"]
-            if kind == "progress":
-                on_progress(event["value"] * self.SEPARATION_SHARE)
-                continue
-            if kind == "done":
-                stats = {k: v for k, v in event.items() if k != "type"}
-                continue
-            stem, data = event["name"], event["data"]
-            bytes_received += len(data)
-            flac = out_dir / f"{stem}.flac"
-            flac.write_bytes(data)
-            # El resto del backend trabaja con WAV (se convierte al descargar), así que se decodifica aquí.
-            wav = out_dir / f"{stem}.wav"
-            subprocess.run(
-                ["ffmpeg", "-y", "-loglevel", "error", "-i", str(flac), "-c:a", "pcm_s16le", str(wav)],
-                check=True,
-            )
-            flac.unlink()
-            result[stem] = wav
-            on_progress(self.SEPARATION_SHARE + (1 - self.SEPARATION_SHARE) * len(result) / n_stems)
+        try:
+            for event in self._cls().separate.remote_gen(audio, input_path.name, preset):
+                kind = event["type"]
+                if kind == "progress":
+                    on_progress(event["value"] * self.SEPARATION_SHARE)
+                    continue
+                if kind == "done":
+                    stats = {k: v for k, v in event.items() if k != "type"}
+                    continue
+                stem, data = event["name"], event["data"]
+                bytes_received += len(data)
+                flac = out_dir / f"{stem}.flac"
+                flac.write_bytes(data)
+                # El resto del backend trabaja con WAV (se convierte al descargar), así que se decodifica aquí.
+                wav = out_dir / f"{stem}.wav"
+                subprocess.run(
+                    ["ffmpeg", "-y", "-loglevel", "error", "-i", str(flac), "-c:a", "pcm_s16le", str(wav)],
+                    check=True,
+                )
+                flac.unlink()
+                result[stem] = wav
+                on_progress(self.SEPARATION_SHARE + (1 - self.SEPARATION_SHARE) * len(result) / n_stems)
+        except Exception as exc:
+            # El error técnico queda en el log (encadenado); la página recibe un mensaje entendible.
+            raise SeparationError(_friendly_modal_error(exc)) from exc
         if not result:
-            raise RuntimeError("Modal no devolvió ninguna pista.")
+            log.error("Modal %s (%s) terminó sin devolver pistas", self.app_name, preset)
+            raise SeparationError(_friendly_modal_error(RuntimeError("sin pistas")))
         stats.update(
             wall_seconds=time.perf_counter() - started,
             bytes_sent=len(audio),
