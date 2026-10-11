@@ -25,7 +25,7 @@ Página  ──POST /api/jobs──▶  guarda el audio y lo mete a la cola
 Requisitos: Python 3.10+ y `ffmpeg` (`sudo apt install ffmpeg`).
 
 ```bash
-cd splitter-backend
+cd splitter            # dentro del repo python-audio-separator
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 pip install "audio-separator[cpu]"     # para probar en tu laptop sin GPU
@@ -34,7 +34,8 @@ uvicorn app.main:app --reload --port 8000
 
 Docs interactivas de la API: <http://localhost:8000/docs>
 
-En **Windows** (Jonathan): igual, pero `.venv\Scripts\activate` y ffmpeg desde <https://ffmpeg.org> (o `winget install ffmpeg`).
+En **Windows**: igual, pero `.venv\Scripts\activate` y ffmpeg desde <https://ffmpeg.org> (o `winget install ffmpeg`).
+Guía paso a paso para empezar desde cero en Windows: [LEEME_JONATHAN.md](LEEME_JONATHAN.md).
 
 ### Probar la página sin modelos ni GPU
 
