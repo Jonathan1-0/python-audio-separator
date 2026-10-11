@@ -3,217 +3,392 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Splitter — prueba</title>
+<title>Splitter</title>
 <link rel="icon" href="data:,">
 <style>
-  :root { --bg:#14161a; --panel:#1d2026; --line:#2e323a; --text:#e6e8eb; --muted:#9097a1; --accent:#5b9dff; --err:#ff6b6b; --ok:#4cc38a; }
-  :root { color-scheme: dark; }
+  :root { --bg:#14161a; --panel:#1d2026; --panel2:#262a31; --line:#2e323a; --text:#e6e8eb; --muted:#9097a1;
+          --accent:#5b9dff; --accent-ink:#0b1220; --err:#ff6b6b; --ok:#4cc38a; color-scheme: dark; }
   * { box-sizing: border-box; }
   body { margin:0; background:var(--bg); color:var(--text); font:15px/1.5 system-ui, sans-serif; }
-  main { max-width:640px; margin:0 auto; padding:24px 16px 48px; }
-  h1 { font-size:20px; margin:0 0 4px; }
+  main { max-width:680px; margin:0 auto; padding:28px 16px 56px; }
+  h1 { font-size:24px; margin:0; }
+  h2 { font-size:16px; margin:0 0 12px; }
+  .lead { color:var(--muted); margin:4px 0 0; }
   .muted { color:var(--muted); font-size:13px; }
-  section { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:16px; margin-top:16px; }
-  #drop { border:2px dashed var(--line); border-radius:8px; padding:28px 12px; text-align:center; cursor:pointer; }
+  section { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:18px; margin-top:16px; }
+  .step { display:inline-grid; place-items:center; width:22px; height:22px; border-radius:50%; background:var(--panel2);
+          font-size:12px; margin-right:6px; vertical-align:1px; }
+
+  /* Paso 1: qué hacer */
+  .modes { display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:10px; }
+  .mode { text-align:left; background:var(--panel2); border:2px solid transparent; border-radius:8px; padding:12px;
+          color:var(--text); font:inherit; cursor:pointer; }
+  .mode strong { display:block; margin-bottom:2px; }
+  .mode span { color:var(--muted); font-size:13px; }
+  .mode[aria-pressed="true"] { border-color:var(--accent); background:#5b9dff14; }
+  .speed { display:flex; gap:8px; flex-wrap:wrap; margin-top:12px; }
+  .speed label { flex:1 1 200px; display:flex; gap:8px; align-items:flex-start; background:var(--panel2);
+                 border:1px solid var(--line); border-radius:8px; padding:10px; cursor:pointer; }
+  .speed label:has(input:checked) { border-color:var(--accent); }
+  .speed small { display:block; color:var(--muted); }
+
+  /* Paso 2: archivo */
+  #drop { border:2px dashed var(--line); border-radius:8px; padding:26px 12px; text-align:center; cursor:pointer; }
   #drop.over { border-color:var(--accent); background:#5b9dff14; }
-  #fileName { margin-top:8px; font-weight:600; word-break:break-all; }
-  label { display:inline-flex; align-items:center; gap:6px; margin:4px 14px 4px 0; }
-  select, button { font:inherit; color:var(--text); background:#262a31; border:1px solid var(--line); border-radius:6px; padding:6px 10px; }
+  #fileName { margin-top:8px; font-weight:600; word-break:break-word; }
+
+  /* Paso 3: pistas */
+  .tracks label { display:inline-flex; align-items:center; gap:6px; margin:4px 16px 4px 0; cursor:pointer; }
+
+  select, button { font:inherit; color:var(--text); background:var(--panel2); border:1px solid var(--line); border-radius:6px; padding:6px 10px; }
   button { cursor:pointer; }
-  button.primary { background:var(--accent); border-color:var(--accent); color:#0b1220; font-weight:600; padding:8px 18px; }
+  button.primary { background:var(--accent); border-color:var(--accent); color:var(--accent-ink); font-weight:600; padding:10px 22px; font-size:16px; }
   button:disabled { opacity:.5; cursor:not-allowed; }
-  .row { margin-top:12px; }
-  .bar { height:10px; background:#262a31; border-radius:5px; overflow:hidden; margin:8px 0; }
+  .actions { margin-top:16px; display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+
+  .bar { height:10px; background:var(--panel2); border-radius:5px; overflow:hidden; margin:10px 0 6px; }
   .bar > div { height:100%; width:0; background:var(--accent); transition:width .3s; }
   .bar.indet > div { width:30%; animation:slide 1.2s infinite linear; }
   @keyframes slide { from { margin-left:-30%; } to { margin-left:100%; } }
-  .error { color:var(--err); background:#ff6b6b18; border:1px solid #ff6b6b55; border-radius:6px; padding:8px 10px; margin-top:12px; }
-  .stem { border-top:1px solid var(--line); padding:10px 0; }
-  .stem:first-child { border-top:0; }
-  .stem audio { width:100%; margin:4px 0; }
-  a { color:var(--accent); }
-  a.btn { display:inline-block; margin-left:8px; padding:6px 12px; border:1px solid var(--accent); border-radius:6px; text-decoration:none; }
+  #status { font-weight:600; }
+  .error { color:var(--err); background:#ff6b6b18; border:1px solid #ff6b6b55; border-radius:6px; padding:10px 12px; margin-top:12px; }
+
+  .track { border-top:1px solid var(--line); padding:12px 0; }
+  .track:first-child { border-top:0; padding-top:0; }
+  .track-head { display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap; }
+  .track audio { width:100%; margin-top:6px; }
+  a.btn { display:inline-block; padding:6px 12px; border:1px solid var(--accent); border-radius:6px; color:var(--accent); text-decoration:none; }
+  a.btn.solid { background:var(--accent); color:var(--accent-ink); font-weight:600; }
+  .download-bar { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:14px; }
   [hidden] { display:none !important; }
 </style>
 </head>
 <body>
 <main>
-  <h1>Splitter — página de prueba</h1>
-  <div class="muted" id="limits">Cargando configuración…</div>
+  <h1>Splitter</h1>
+  <p class="lead">Separa la voz de la música, saca cada instrumento por su lado o limpia la voz de tu podcast.</p>
 
-  <section>
-    <div id="drop">
-      Arrastra un archivo de audio aquí o <button type="button" id="pick">Elegir archivo</button>
+  <section id="setup">
+    <h2><span class="step">1</span>¿Qué quieres hacer?</h2>
+    <div class="modes" id="modes"></div>
+    <div class="speed" id="speed" hidden>
+      <label><input type="radio" name="speed" value="fast" checked>
+        <div>Rápida<small>Lista en menos tiempo. Ideal para practicar o probar.</small></div></label>
+      <label><input type="radio" name="speed" value="best">
+        <div>Mejor calidad<small>Tarda un poco más, pero cada instrumento suena más limpio.</small></div></label>
+    </div>
+
+    <h2 style="margin-top:20px"><span class="step">2</span>Sube tu audio</h2>
+    <div id="drop" role="button" tabindex="0">
+      Arrastra tu archivo aquí o <button type="button" id="pick">elige uno</button>
       <input type="file" id="file" hidden>
       <div id="fileName"></div>
+      <div class="muted" id="limits"></div>
     </div>
 
-    <div class="row">
-      Preset: <select id="preset"></select>
+    <div id="tracksBox" hidden>
+      <h2 style="margin-top:20px"><span class="step">3</span>¿Qué quieres descargar?</h2>
+      <div class="tracks" id="tracks"></div>
     </div>
-    <div class="row" id="stems"></div>
 
-    <div class="row">
-      <button class="primary" id="go" disabled>Separar</button>
+    <div class="actions">
+      <button class="primary" id="go" disabled>Empezar</button>
+      <span class="muted" id="hint"></span>
     </div>
     <div class="error" id="error" hidden></div>
   </section>
 
   <section id="progress" hidden>
-    <div id="status">En cola…</div>
+    <div id="status">Subiendo tu archivo…</div>
     <div class="bar" id="bar"><div></div></div>
     <div class="muted" id="detail"></div>
   </section>
 
   <section id="results" hidden>
-    <div class="row" style="margin-top:0">
-      Formato de descarga: <select id="format"></select>
-      <a id="zip" class="btn" href="#" download>Descargar todo (ZIP)</a>
+    <h2>¡Listo! Escucha y descarga</h2>
+    <div class="download-bar">
+      <a id="zip" class="btn solid" href="#" download>Descargar todo</a>
+      <label class="muted">Formato:
+        <select id="format"></select>
+      </label>
     </div>
-    <div id="stemList" class="row"></div>
+    <div id="trackList"></div>
+    <p class="muted" id="expires"></p>
+    <button type="button" id="again">Procesar otro audio</button>
   </section>
 </main>
 
 <script>
 const $ = (id) => document.getElementById(id);
-let cfg = null, file = null, es = null, lastJob = null;
 
-function showError(msg) { $("error").textContent = msg; $("error").hidden = !msg; }
+// Lo que ve el usuario. Las claves son las del backend; si el backend agrega algo que no está aquí,
+// simplemente no se muestra.
+const MODES = [
+  { id: "vocals", title: "Separar voz y música", text: "Una pista con la voz y otra con la música sin voz.", presets: { fast: "2stem" }, button: "Separar" },
+  { id: "instruments", title: "Separar instrumentos", text: "Voz, batería, bajo y el resto de instrumentos por separado.", presets: { fast: "4stem_fast", best: "4stem" }, button: "Separar" },
+  { id: "podcast", title: "Limpiar podcast", text: "Quita la música y el ruido de fondo y deja solo la voz.", presets: { fast: "denoise" }, button: "Limpiar audio" },
+];
+const TRACK_NAMES = {
+  vocals: "Voz", instrumental: "Música sin voz", drums: "Batería", bass: "Bajo", other: "Otros instrumentos",
+  voice: "Voz limpia", background: "Lo que se quitó (música y ruido)",
+};
+const FORMAT_NAMES = {
+  mp3: "MP3 (recomendado)", wav: "WAV (máxima calidad, pesa más)", flac: "FLAC (máxima calidad, pesa menos que WAV)",
+  ogg: "OGG", m4a: "M4A (iPhone / Apple)",
+};
+const trackName = (s) => TRACK_NAMES[s] || s;
+
+let cfg = null, file = null, fileSeconds = null, mode = null, es = null, lastJob = null, busy = false;
+
+function showError(msg) { $("error").textContent = msg || ""; $("error").hidden = !msg; }
 
 async function errorDetail(res) {
-  try { const j = await res.json(); if (j.detail) return typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail); } catch {}
-  return `Error ${res.status} ${res.statusText}`;
+  try { const j = await res.json(); if (typeof j.detail === "string") return j.detail; } catch {}
+  if (res.status >= 500) return "El servidor tuvo un problema. Intenta de nuevo en unos minutos.";
+  return "No se pudo completar. Intenta de nuevo.";
 }
 
-// 1) Configuración
+function minutes(sec) { return `${Math.floor(sec / 60)}:${String(Math.floor(sec % 60)).padStart(2, "0")}`; }
+
+// ---------------------------------------------------------------- configuración
 async function loadConfig() {
   try {
     const res = await fetch("/api/config");
-    if (!res.ok) throw new Error(await errorDetail(res));
+    if (!res.ok) throw new Error();
     cfg = await res.json();
-  } catch (e) { showError("No se pudo cargar /api/config: " + e.message); $("limits").textContent = ""; return; }
-
-  $("limits").textContent = `Máx. ${cfg.max_upload_mb} MB · Formatos: ${cfg.accepted_extensions.join(", ")}`;
+  } catch {
+    showError("No pudimos conectar con el servidor. Recarga la página en unos minutos.");
+    return;
+  }
+  const common = ["mp3", "wav", "m4a", "flac"].filter((e) => cfg.accepted_extensions.includes("." + e));
+  const formats = common.map((e) => e.toUpperCase()).join(", ") + (cfg.accepted_extensions.length > common.length ? " y otros" : "");
+  const limits = [formats, `hasta ${cfg.max_upload_mb} MB`];
+  if (cfg.max_audio_minutes) limits.push(`máximo ${cfg.max_audio_minutes} minutos`);
+  $("limits").textContent = limits.join(" · ");
   $("file").accept = cfg.accepted_extensions.join(",");
-  for (const [key, p] of Object.entries(cfg.presets)) $("preset").add(new Option(`${key} — ${p.label}`, key));
-  $("preset").value = cfg.default_preset;
-  for (const f of cfg.output_formats) $("format").add(new Option(f, f));
-  $("format").value = cfg.output_formats.includes("mp3") ? "mp3" : cfg.output_formats[0];
-  renderStems();
-}
 
-// 3) Casillas según preset
-function renderStems() {
-  const stems = cfg.presets[$("preset").value].stems;
-  $("stems").innerHTML = "Pistas: ";
-  for (const s of stems) {
-    const l = document.createElement("label");
-    l.innerHTML = `<input type="checkbox" value="${s}" checked> ${s}`;
-    $("stems").append(l);
+  for (const f of cfg.output_formats) $("format").add(new Option(FORMAT_NAMES[f] || f.toUpperCase(), f));
+  $("format").value = cfg.output_formats.includes("mp3") ? "mp3" : cfg.output_formats[0];
+
+  for (const m of MODES) {
+    m.presets = Object.fromEntries(Object.entries(m.presets).filter(([, p]) => cfg.presets[p]));
+    if (!Object.keys(m.presets).length) continue;
+    const b = document.createElement("button");
+    b.type = "button"; b.className = "mode"; b.dataset.mode = m.id; b.setAttribute("aria-pressed", "false");
+    b.innerHTML = "<strong></strong><span></span>";
+    b.querySelector("strong").textContent = m.title;
+    b.querySelector("span").textContent = m.text;
+    b.onclick = () => selectMode(m);
+    $("modes").append(b);
   }
   updateButton();
 }
-$("preset").onchange = renderStems;
-$("stems").onchange = updateButton;
 
-function selectedStems() { return [...$("stems").querySelectorAll("input:checked")].map((c) => c.value); }
-function updateButton() { $("go").disabled = !cfg || !file || selectedStems().length === 0 || (es !== null); }
+// ---------------------------------------------------------------- paso 1: qué hacer
+function currentPreset() {
+  if (!mode) return null;
+  const speed = document.querySelector("input[name=speed]:checked").value;
+  return mode.presets[speed] || mode.presets.fast || Object.values(mode.presets)[0];
+}
 
-// 2) Archivo: drag & drop + selector, con validación
-function setFile(f) {
-  showError("");
-  file = null; $("fileName").textContent = "";
-  if (f) {
-    const ext = f.name.includes(".") ? "." + f.name.split(".").pop().toLowerCase() : "";
-    if (!cfg.accepted_extensions.includes(ext)) showError(`Tipo no soportado (${ext || "sin extensión"}). Acepta: ${cfg.accepted_extensions.join(", ")}`);
-    else if (f.size > cfg.max_upload_mb * 1024 * 1024) showError(`El archivo pesa ${(f.size / 1048576).toFixed(1)} MB; el límite es ${cfg.max_upload_mb} MB.`);
-    else { file = f; $("fileName").textContent = `${f.name} (${(f.size / 1048576).toFixed(2)} MB)`; }
+function selectMode(m) {
+  mode = m;
+  for (const b of $("modes").children) b.setAttribute("aria-pressed", String(b.dataset.mode === m.id));
+  $("speed").hidden = !(m.presets.fast && m.presets.best);
+  $("go").textContent = m.button;
+  renderTracks();
+}
+for (const r of document.querySelectorAll("input[name=speed]")) r.onchange = renderTracks;
+
+// ---------------------------------------------------------------- paso 3: pistas
+function renderTracks() {
+  if (!mode) return;
+  const stems = cfg.presets[currentPreset()].stems;
+  $("tracks").innerHTML = "";
+  for (const s of stems) {
+    const l = document.createElement("label");
+    l.innerHTML = '<input type="checkbox" checked> <span></span>';
+    l.querySelector("input").value = s;
+    l.querySelector("span").textContent = trackName(s);
+    $("tracks").append(l);
   }
+  $("tracksBox").hidden = false;
+  updateButton();
+}
+$("tracks").onchange = updateButton;
+function selectedTracks() { return [...$("tracks").querySelectorAll("input:checked")].map((c) => c.value); }
+
+function updateButton() {
+  let hint = "";
+  if (!mode) hint = "Elige qué quieres hacer.";
+  else if (!file) hint = "Sube un archivo de audio.";
+  else if (!selectedTracks().length) hint = "Elige al menos una pista.";
+  $("hint").textContent = busy ? "" : hint;
+  $("go").disabled = busy || !!hint || !cfg;
+}
+
+// ---------------------------------------------------------------- paso 2: archivo
+function readDuration(f) {
+  // Duración leída en el navegador para avisar antes de subir. Si el navegador no puede
+  // leer el formato, devuelve null y el servidor lo revisa.
+  return new Promise((resolve) => {
+    const a = document.createElement("audio");
+    const url = URL.createObjectURL(f);
+    const done = (v) => { URL.revokeObjectURL(url); resolve(v); };
+    a.preload = "metadata";
+    a.onloadedmetadata = () => done(isFinite(a.duration) ? a.duration : null);
+    a.onerror = () => done(null);
+    setTimeout(() => done(null), 5000);
+    a.src = url;
+  });
+}
+
+async function setFile(f) {
+  showError("");
+  file = null; fileSeconds = null; $("fileName").textContent = "";
+  updateButton();
+  if (!f || !cfg) return;
+  const ext = f.name.includes(".") ? "." + f.name.split(".").pop().toLowerCase() : "";
+  if (!cfg.accepted_extensions.includes(ext)) {
+    showError(`Ese tipo de archivo no se puede usar. Prueba con ${cfg.accepted_extensions.map((e) => e.slice(1).toUpperCase()).join(", ")}.`);
+    return;
+  }
+  if (f.size > cfg.max_upload_mb * 1048576) {
+    showError(`El archivo pesa ${(f.size / 1048576).toFixed(0)} MB y el máximo es ${cfg.max_upload_mb} MB.`);
+    return;
+  }
+  const sec = await readDuration(f);
+  if (sec && cfg.max_audio_minutes && sec > cfg.max_audio_minutes * 60) {
+    showError(`El audio dura ${minutes(sec)} y el máximo es ${cfg.max_audio_minutes} minutos.`);
+    return;
+  }
+  file = f; fileSeconds = sec;
+  $("fileName").textContent = sec ? `${f.name} · ${minutes(sec)}` : f.name;
   updateButton();
 }
 $("pick").onclick = (e) => { e.stopPropagation(); $("file").click(); };
 $("drop").onclick = () => $("file").click();
+$("drop").onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); $("file").click(); } };
 $("file").onchange = () => { setFile($("file").files[0]); $("file").value = ""; };
 $("drop").ondragover = (e) => { e.preventDefault(); $("drop").classList.add("over"); };
 $("drop").ondragleave = () => $("drop").classList.remove("over");
-$("drop").ondrop = (e) => { e.preventDefault(); $("drop").classList.remove("over"); if (cfg) setFile(e.dataTransfer.files[0]); };
+$("drop").ondrop = (e) => { e.preventDefault(); $("drop").classList.remove("over"); setFile(e.dataTransfer.files[0]); };
 
-// 4) Subir y seguir el progreso
+// ---------------------------------------------------------------- subir y seguir el progreso
+function upload(fd) {
+  // XMLHttpRequest en vez de fetch para poder mostrar el avance de la subida.
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", "/api/jobs");
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable) setBar(e.loaded / e.total, `Subiendo tu archivo… ${Math.round((e.loaded / e.total) * 100)}%`, "");
+    };
+    xhr.onload = () => {
+      let body = null;
+      try { body = JSON.parse(xhr.responseText); } catch {}
+      if (xhr.status >= 200 && xhr.status < 300 && body) resolve(body);
+      else if (body && typeof body.detail === "string") reject(new Error(body.detail));
+      else reject(new Error(xhr.status >= 500 ? "El servidor tuvo un problema. Intenta de nuevo en unos minutos." : "No se pudo subir el archivo. Intenta de nuevo."));
+    };
+    xhr.onerror = () => reject(new Error("Se perdió la conexión al subir el archivo. Revisa tu internet e intenta de nuevo."));
+    xhr.send(fd);
+  });
+}
+
 $("go").onclick = async () => {
   showError("");
+  busy = true; updateButton();
   $("results").hidden = true;
-  $("go").disabled = true;
+  $("progress").hidden = false;
+  setBar(0, "Subiendo tu archivo…", "");
+
   const fd = new FormData();
   fd.append("file", file);
-  fd.append("preset", $("preset").value);
-  fd.append("stems", selectedStems().join(","));
-  showProgress({ status: "queued", progress: 0, message: "Subiendo archivo…" });
+  fd.append("preset", currentPreset());
+  fd.append("stems", selectedTracks().join(","));
 
   let job;
-  try {
-    const res = await fetch("/api/jobs", { method: "POST", body: fd });
-    if (!res.ok) throw new Error(await errorDetail(res));
-    job = await res.json();
-  } catch (e) { $("progress").hidden = true; showError(e.message); updateButton(); return; }
+  try { job = await upload(fd); }
+  catch (e) { $("progress").hidden = true; showError(e.message); busy = false; updateButton(); return; }
 
-  showProgress(job);
+  showJob(job);
   es = new EventSource(`/api/jobs/${job.id}/events`);
   es.addEventListener("update", (ev) => {
     const j = JSON.parse(ev.data);
-    showProgress(j);
-    if (j.status === "done") { closeES(); showResults(j); }
-    else if (j.status === "error") { closeES(); showError(j.error || j.message || "Error al procesar el audio."); }
+    showJob(j);
+    if (j.status === "done") { finish(); showResults(j); }
+    else if (j.status === "error") { finish(); $("progress").hidden = true; showError(j.error || "No se pudo procesar el audio. Intenta de nuevo."); }
   });
-  es.addEventListener("gone", () => { closeES(); showError("El trabajo ya no existe o expiró."); });
-  es.onerror = () => { if (es && es.readyState === EventSource.CLOSED) { closeES(); showError("Se perdió la conexión con el servidor."); } };
-  updateButton();
+  es.addEventListener("gone", () => { finish(); $("progress").hidden = true; showError("Este trabajo ya no está disponible. Vuelve a subir el archivo."); });
+  es.onerror = () => {
+    if (es && es.readyState === EventSource.CLOSED) { finish(); showError("Se perdió la conexión con el servidor. Recarga la página e intenta de nuevo."); }
+  };
 };
 
-function closeES() { if (es) { es.close(); es = null; } updateButton(); }
+function finish() { if (es) { es.close(); es = null; } busy = false; updateButton(); }
 
-function showProgress(j) {
-  $("progress").hidden = false;
+function setBar(fraction, status, detail) {
   const bar = $("bar"), fill = bar.firstElementChild;
-  const indet = j.progress == null && j.status !== "done" && j.status !== "error";
-  bar.classList.toggle("indet", indet);
-  const pct = j.status === "done" ? 100 : Math.round((j.progress || 0) * 100);
-  fill.style.width = indet ? "" : pct + "%";
-  fill.style.background = j.status === "error" ? "var(--err)" : j.status === "done" ? "var(--ok)" : "";
-  const labels = { queued: "En cola", processing: "Procesando", done: "Listo", error: "Error" };
-  $("status").textContent = `${labels[j.status] || j.status}${indet ? "" : ` — ${pct}%`}`;
-  const parts = [];
-  if (j.message) parts.push(j.message);
-  if (j.queue_position != null) parts.push(`Posición en cola: ${j.queue_position}`);
-  $("detail").textContent = parts.join(" · ");
+  bar.classList.toggle("indet", fraction == null);
+  fill.style.width = fraction == null ? "" : `${Math.round(fraction * 100)}%`;
+  fill.style.background = "";
+  $("status").textContent = status;
+  $("detail").textContent = detail;
 }
 
-// 5) Resultados
+function showJob(j) {
+  if (j.status === "queued") {
+    const pos = j.queue_position;
+    const ahead = pos ? pos - 1 : 0;
+    const detail = ahead === 0 ? "Eres el siguiente." : `Hay ${ahead} ${ahead === 1 ? "persona" : "personas"} antes que tú.`;
+    setBar(null, "Esperando turno…", detail);
+  } else if (j.status === "processing") {
+    const pct = j.progress == null ? null : j.progress;
+    const action = mode && mode.id === "podcast" ? "Limpiando tu audio" : "Separando tu audio";
+    setBar(pct, pct == null ? `${action}…` : `${action}… ${Math.round(pct * 100)}%`,
+           "Puedes dejar esta página abierta mientras termina.");
+  } else if (j.status === "done") {
+    setBar(1, "¡Listo!", "");
+    $("bar").firstElementChild.style.background = "var(--ok)";
+  }
+}
+
+// ---------------------------------------------------------------- resultados
 function showResults(j) {
   lastJob = j;
-  const list = $("stemList");
-  list.innerHTML = "";
+  $("trackList").innerHTML = "";
   for (const s of j.stems) {
     const div = document.createElement("div");
-    div.className = "stem";
-    div.innerHTML = `<strong></strong><audio controls preload="none"></audio><a download>Descargar</a>`;
-    div.querySelector("strong").textContent = s.name;
+    div.className = "track";
+    div.innerHTML = '<div class="track-head"><strong></strong><a class="btn" download>Descargar</a></div><audio controls preload="none"></audio>';
+    div.querySelector("strong").textContent = trackName(s.name);
     div.querySelector("audio").src = s.preview_url;
     div.querySelector("a").dataset.base = s.download_url;
-    list.append(div);
+    $("trackList").append(div);
   }
+  $("zip").hidden = j.stems.length < 2;
+  $("expires").textContent = j.expires_in_minutes
+    ? `Tus archivos se borran automáticamente en ${j.expires_in_minutes} minutos. Descárgalos antes.`
+    : "";
   updateLinks();
+  $("progress").hidden = true;
   $("results").hidden = false;
+  $("results").scrollIntoView({ behavior: "smooth", block: "start" });
 }
 function updateLinks() {
   if (!lastJob) return;
   const fmt = $("format").value;
-  for (const a of $("stemList").querySelectorAll("a")) {
-    a.href = `${a.dataset.base}?format=${fmt}`;
-    a.textContent = `Descargar (${fmt})`;
-  }
+  for (const a of $("trackList").querySelectorAll("a")) a.href = `${a.dataset.base}?format=${fmt}`;
   $("zip").href = `${lastJob.download_all_url}?format=${fmt}`;
 }
 $("format").onchange = updateLinks;
+
+$("again").onclick = () => {
+  lastJob = null;
+  $("results").hidden = true;
+  setFile(null);
+  window.scrollTo({ top: 0, behavior: "smooth" });
+};
 
 loadConfig();
 </script>
