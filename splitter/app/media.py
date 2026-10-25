@@ -20,14 +20,12 @@ _CODEC_ARGS = {
 
 
 def _tmp_path(dst: Path) -> Path:
-    """Temporal con nombre único: si llegan dos peticiones a la vez, cada una escribe el suyo
-    y el `replace` final es atómico (gana la última, ambas versiones son válidas)."""
+    """Un temporal por petición: si dos piden lo mismo a la vez, no se pisan."""
     return dst.with_name(f"{dst.name}.{uuid.uuid4().hex}.part")
 
 
 def _publish(tmp: Path, dst: Path) -> None:
-    """Mueve el temporal a su sitio. En Windows falla si otra petición está enviando `dst`;
-    en ese caso ya hay una versión válida, así que se descarta la nuestra."""
+    """En Windows falla si otra petición está enviando `dst`; entonces ya hay una copia válida."""
     try:
         tmp.replace(dst)
     except PermissionError:
@@ -45,7 +43,7 @@ def ffprobe_available() -> bool:
 
 
 def audio_duration(path: Path) -> float:
-    """Duración en segundos según ffprobe. Lanza ValueError si el archivo no es audio legible."""
+    """Segundos. Lanza ValueError si no es audio legible."""
     proc = subprocess.run(
         ["ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries", "format=duration",
          "-of", "default=noprint_wrappers=1:nokey=1", str(path)],
@@ -61,7 +59,7 @@ def audio_duration(path: Path) -> float:
 
 
 def convert(src: Path, fmt: str, *, preview: bool = False) -> Path:
-    """Convierte `src` (WAV) a `fmt` y deja el resultado junto al original como caché."""
+    """Convierte el WAV y deja el resultado al lado como caché."""
     fmt = fmt.lower()
     if fmt not in config.OUTPUT_FORMATS:
         raise ValueError(f"Formato no soportado: {fmt}")
@@ -71,7 +69,7 @@ def convert(src: Path, fmt: str, *, preview: bool = False) -> Path:
         args = ["-c:a", "libmp3lame", "-b:a", config.PREVIEW_BITRATE]
     else:
         if fmt == "wav":
-            return src  # ya está en WAV
+            return src
         dst = src.with_suffix(f".{fmt}")
         args = _CODEC_ARGS[fmt]
 
@@ -93,13 +91,12 @@ def convert(src: Path, fmt: str, *, preview: bool = False) -> Path:
 
 
 def build_zip(stems: Dict[str, Path], fmt: str, base_name: str, dest_dir: Path) -> Path:
-    """Crea un ZIP con todas las pistas en el formato pedido."""
     zip_path = dest_dir / f"all.{fmt}.zip"
     if zip_path.exists():
         return zip_path
     tmp = _tmp_path(zip_path)
     try:
-        with zipfile.ZipFile(tmp, "w", zipfile.ZIP_STORED) as zf:  # el audio ya está comprimido, no vale la pena deflate
+        with zipfile.ZipFile(tmp, "w", zipfile.ZIP_STORED) as zf:  # el audio ya viene comprimido
             for stem, wav in stems.items():
                 out = convert(wav, fmt)
                 zf.write(out, arcname=f"{base_name} - {stem}.{fmt}")

@@ -1,4 +1,4 @@
-"""Límite de trabajos por persona (por IP) en una ventana de tiempo, en memoria."""
+"""Límite de trabajos por clave (IP, o una sola para toda la página) en una ventana de tiempo."""
 from __future__ import annotations
 
 import threading
@@ -15,9 +15,8 @@ class RateLimiter:
         self._lock = threading.Lock()
 
     def acquire(self, key: str) -> float:
-        """Reserva un lugar para `key`. Devuelve 0 si se pudo, o los segundos que faltan
-        para que se libere uno. Se reserva antes de procesar para que dos subidas
-        simultáneas no pasen las dos el límite; si la subida falla, se llama a `release`."""
+        """Devuelve 0 si hay lugar (y lo reserva) o los segundos que faltan para que se libere uno.
+        Se reserva antes de subir para que dos subidas a la vez no pasen las dos."""
         if self.max_events <= 0:
             return 0.0
         now = time.monotonic()
@@ -31,7 +30,7 @@ class RateLimiter:
             return 0.0
 
     def release(self, key: str) -> None:
-        """Devuelve la última reserva (la subida fue rechazada y no debe contar)."""
+        """Deshace la última reserva: una subida rechazada no cuenta."""
         if self.max_events <= 0:
             return
         with self._lock:

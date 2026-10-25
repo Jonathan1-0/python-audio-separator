@@ -1,4 +1,4 @@
-"""API de Splitter: conecta la página web con el servicio de separación de audio."""
+"""API de Splitter."""
 from __future__ import annotations
 
 import asyncio
@@ -29,6 +29,8 @@ log = logging.getLogger("splitter.api")
 engine = build_engine()
 manager = JobManager(engine)
 limiter = RateLimiter(config.MAX_JOBS_PER_HOUR, 3600)
+daily_limiter = RateLimiter(config.MAX_JOBS_PER_DAY, 24 * 3600)  # una cuenta para toda la página
+ALL_USERS = "todos"
 
 
 @asynccontextmanager
@@ -48,9 +50,7 @@ app.add_middleware(
 )
 
 
-# ---------------------------------------------------------------------------
-# Utilidades
-# ---------------------------------------------------------------------------
+# --- Utilidades
 def _safe_base_name(filename: str) -> str:
     stem = Path(filename).stem
     cleaned = re.sub(r"[^\w\- .()\[\]]", "_", stem, flags=re.UNICODE).strip(" .")
@@ -59,9 +59,10 @@ def _safe_base_name(filename: str) -> str:
 
 def _client_ip(request: Request) -> str:
     if config.BEHIND_PROXY:
+        # El proxy agrega la IP real al final; lo anterior lo puede escribir el usuario.
         forwarded = request.headers.get("x-forwarded-for", "")
-        if forwarded:
-            return forwarded.split(",")[0].strip()
+        if forwarded.strip(" ,"):
+            return forwarded.rstrip(" ,").rsplit(",", 1)[-1].strip()
     return request.client.host if request.client else "desconocido"
 
 
@@ -76,7 +77,7 @@ def _public(job: Job) -> dict:
     data = {
         "id": job.id,
         "status": job.status,  # queued | processing | done | error
-        "progress": job.progress,  # 0..1, null si no se puede medir
+        "progress": job.progress,  # 0..1, o null
         "message": job.message,
         "error": job.error,
         "filename": job.original_name,
@@ -115,9 +116,7 @@ def _stem_path(job: Job, stem: str) -> Path:
     return path
 
 
-# ---------------------------------------------------------------------------
-# Información general
-# ---------------------------------------------------------------------------
+# --- Información general
 @app.get("/api/health")
 def health():
     return {
@@ -130,7 +129,7 @@ def health():
 
 @app.get("/api/config")
 def get_config():
-    """Lo que la página necesita saber para armar su interfaz (límites, formatos, pistas)."""
+    """Límites, formatos y presets para armar la página."""
     return {
         "max_upload_mb": config.MAX_UPLOAD_MB,
         "accepted_extensions": sorted(config.ALLOWED_INPUT_EXT),
@@ -140,11 +139,11 @@ def get_config():
         "results_kept_minutes": config.JOB_TTL_MINUTES,
         "max_audio_minutes": config.MAX_AUDIO_MINUTES or None,  # None = sin límite
         "max_jobs_per_hour": config.MAX_JOBS_PER_HOUR or None,
+        "max_jobs_per_day": config.MAX_JOBS_PER_DAY or None,
     }
 
 
 async def _check_duration(path: Path) -> None:
-    """Rechaza lo que no es audio legible y lo que pasa del límite de minutos."""
     if not media.ffprobe_available():
         log.warning("ffprobe no está instalado: no se valida la duración del audio")
         return
@@ -160,9 +159,7 @@ async def _check_duration(path: Path) -> None:
         )
 
 
-# ---------------------------------------------------------------------------
-# Subir archivo y crear el trabajo
-# ---------------------------------------------------------------------------
+# --- Subir archivo y crear el trabajo
 @app.post("/api/jobs", status_code=202)
 async def create_job(
     request: Request,
@@ -170,7 +167,7 @@ async def create_job(
     preset: str = Form(config.DEFAULT_PRESET),
     stems: str = Form(""),
 ):
-    """Sube el audio y lo pone en cola. `stems` es una lista separada por comas (vacío = todas)."""
+    """`stems`: pistas separadas por comas; vacío = todas."""
     if preset not in config.PRESETS:
         raise HTTPException(400, f"Preset inválido. Opciones: {', '.join(config.PRESETS)}.")
     available = config.PRESETS[preset]["stems"]
@@ -197,6 +194,16 @@ async def create_job(
             f"Podrás mandar otro en {minutes} min.",
             headers={"Retry-After": str(int(wait) + 1)},
         )
+    wait = daily_limiter.acquire(ALL_USERS)
+    if wait:
+        limiter.release(ip)
+        hours = max(1, round(wait / 3600))
+        raise HTTPException(
+            429,
+            f"La página llegó a su límite de {config.MAX_JOBS_PER_DAY} trabajos por día. "
+            f"Intenta de nuevo en {hours} h.",
+            headers={"Retry-After": str(int(wait) + 1)},
+        )
 
     job_id, job_dir = manager.new_job_dir()
     input_path = job_dir / f"input{ext}"
@@ -215,7 +222,8 @@ async def create_job(
         import shutil
 
         shutil.rmtree(job_dir, ignore_errors=True)
-        limiter.release(ip)  # un archivo rechazado no cuenta para el límite
+        limiter.release(ip)  # un archivo rechazado no cuenta para los límites
+        daily_limiter.release(ALL_USERS)
         raise
 
     job = Job(
@@ -233,13 +241,12 @@ async def create_job(
 
         shutil.rmtree(job_dir, ignore_errors=True)
         limiter.release(ip)
+        daily_limiter.release(ALL_USERS)
         raise HTTPException(503, "El servicio está muy ocupado. Intenta de nuevo en unos minutos.")
     return _public(job)
 
 
-# ---------------------------------------------------------------------------
-# Estado y progreso en tiempo real
-# ---------------------------------------------------------------------------
+# --- Estado y progreso en tiempo real
 @app.get("/api/jobs/{job_id}")
 def job_status(job_id: str):
     return _public(_job_or_404(job_id))
@@ -247,7 +254,7 @@ def job_status(job_id: str):
 
 @app.get("/api/jobs/{job_id}/events")
 async def job_events(job_id: str, request: Request):
-    """Server-Sent Events: la página abre esto con `new EventSource(url)` y recibe cada cambio."""
+    """Server-Sent Events: manda el trabajo cada vez que cambia."""
     _job_or_404(job_id)
 
     async def stream():
@@ -280,12 +287,10 @@ async def job_events(job_id: str, request: Request):
     )
 
 
-# ---------------------------------------------------------------------------
-# Vista previa y descargas
-# ---------------------------------------------------------------------------
+# --- Vista previa y descargas
 @app.get("/api/jobs/{job_id}/stems/{stem}/preview")
 async def stem_preview(job_id: str, stem: str):
-    """MP3 ligero para escuchar en el navegador antes de descargar (soporta rangos, se puede saltar)."""
+    """MP3 liviano para escuchar en la página."""
     job = _job_or_404(job_id)
     path = _stem_path(job, stem)
     try:
@@ -295,8 +300,10 @@ async def stem_preview(job_id: str, stem: str):
     return FileResponse(mp3, media_type="audio/mpeg")
 
 
+# Con prepare=1 solo se convierte el archivo (queda en caché): la página muestra "Preparando…"
+# mientras tanto y después descarga.
 @app.get("/api/jobs/{job_id}/stems/{stem}/download")
-async def stem_download(job_id: str, stem: str, format: str = "wav"):
+async def stem_download(job_id: str, stem: str, format: str = "wav", prepare: bool = False):
     job = _job_or_404(job_id)
     fmt = _check_format(format)
     path = _stem_path(job, stem)
@@ -304,6 +311,8 @@ async def stem_download(job_id: str, stem: str, format: str = "wav"):
         out = await run_in_threadpool(media.convert, path, fmt)
     except RuntimeError as exc:
         raise HTTPException(500, str(exc))
+    if prepare:
+        return {"ready": True}
     return FileResponse(
         out,
         media_type=config.OUTPUT_FORMATS[fmt],
@@ -312,8 +321,7 @@ async def stem_download(job_id: str, stem: str, format: str = "wav"):
 
 
 @app.get("/api/jobs/{job_id}/download")
-async def download_all(job_id: str, format: str = "wav"):
-    """Todas las pistas elegidas en un ZIP."""
+async def download_all(job_id: str, format: str = "wav", prepare: bool = False):
     job = _job_or_404(job_id)
     fmt = _check_format(format)
     if job.status != DONE:
@@ -322,20 +330,18 @@ async def download_all(job_id: str, format: str = "wav"):
         zip_path = await run_in_threadpool(media.build_zip, job.stem_files, fmt, job.original_name, job.out_dir)
     except RuntimeError as exc:
         raise HTTPException(500, str(exc))
+    if prepare:
+        return {"ready": True}
     return FileResponse(zip_path, media_type="application/zip", filename=f"{job.original_name} - splitter.zip")
 
 
 @app.delete("/api/jobs/{job_id}", status_code=204)
 def delete_job(job_id: str):
-    """La página puede llamar a esto para borrar los archivos apenas el usuario termine."""
     if not manager.delete(job_id):
         raise HTTPException(404, "Ese trabajo no existe o ya expiró.")
 
 
-# ---------------------------------------------------------------------------
-# Opcional: servir la página desde el mismo servidor (evita problemas de CORS).
-#   SPLITTER_FRONTEND_DIR=/ruta/a/la/pagina uvicorn app.main:app
-# ---------------------------------------------------------------------------
+# --- La página, si se define SPLITTER_FRONTEND_DIR
 _frontend = os.getenv("SPLITTER_FRONTEND_DIR")
 if _frontend and Path(_frontend).is_dir():
     app.mount("/", StaticFiles(directory=_frontend, html=True), name="frontend")

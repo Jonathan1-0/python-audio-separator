@@ -1,9 +1,8 @@
-"""Motor de separación: envuelve python-audio-separator y reporta progreso real.
+"""Motores de separación.
 
-Tres motores:
-  - RealEngine: usa la librería (GPU NVIDIA si está disponible, si no CPU).
-  - ModalEngine: manda el audio a una GPU L4 en Modal (ver modal_app.py) y recibe las pistas.
-  - FakeEngine: simula el proceso con audio sintético, para probar la página sin modelos.
+  - ModalEngine: el que usa el backend; manda el audio a Modal y recibe las pistas.
+  - RealEngine: corre audio-separator dentro del contenedor de Modal.
+  - FakeEngine: tonos de prueba, para trabajar en la página sin gastar crédito.
 """
 from __future__ import annotations
 
@@ -21,22 +20,18 @@ from . import config
 
 log = logging.getLogger("splitter.engine")
 
-ProgressCb = Callable[[float], None]  # recibe un valor de 0.0 a 1.0
+ProgressCb = Callable[[float], None]  # 0.0 a 1.0
 
-# ---------------------------------------------------------------------------
-# Progreso real: la librería usa tqdm en sus bucles de inferencia, así que lo
-# interceptamos para saber en qué fracción va el trabajo.
-# ---------------------------------------------------------------------------
+# La librería no avisa su avance, pero usa barras de tqdm: se interceptan para mostrar el progreso.
 _local = threading.local()
 
 
 def _report(fraction: float) -> None:
-    """`fraction` es el avance de la barra actual. Algunos modelos (demucs con varios
-    submodelos/shifts) recorren varias barras seguidas; se combinan en un solo 0..1."""
+    """Demucs recorre varias barras seguidas (una por submodelo); se juntan en un solo 0..1."""
     cb: Optional[ProgressCb] = getattr(_local, "cb", None)
     if cb is not None:
         if getattr(_local, "bars", None) is None:
-            # Se calcula aquí y no antes: demucs carga su modelo dentro de separate().
+            # No se puede saber antes: demucs carga su modelo dentro de separate().
             fn = getattr(_local, "bars_fn", None)
             _local.bars = fn() if fn else 1
         bars = _local.bars
@@ -73,7 +68,6 @@ _patched = False
 
 
 def _patch_tqdm() -> None:
-    """Sustituye tqdm por la versión con hook en los módulos que hacen la inferencia."""
     global _patched
     if _patched:
         return
@@ -88,7 +82,7 @@ def _patch_tqdm() -> None:
     ):
         try:
             mod = __import__(modname, fromlist=["tqdm"])
-        except Exception:  # módulo no disponible en esta versión
+        except Exception:  # no existe en esta versión
             continue
         current = getattr(mod, "tqdm", None)
         if current is None:
@@ -102,7 +96,7 @@ def _patch_tqdm() -> None:
 
 
 def _stem_from_filename(path: str, known: list[str]) -> Optional[str]:
-    """Deduce a qué stem corresponde un archivo de salida (p. ej. 'x_(Vocals)_modelo.wav')."""
+    """'x_(Vocals)_modelo.wav' -> 'vocals'."""
     name = Path(path).stem.lower()
     for stem in known:
         if f"({stem})" in name or name == stem or name.endswith(f"_{stem}"):
@@ -110,18 +104,12 @@ def _stem_from_filename(path: str, known: list[str]) -> Optional[str]:
     return None
 
 
-# ---------------------------------------------------------------------------
 class RealEngine:
-    """Mantiene los Separator cargados en memoria (cargar el modelo es lo lento)."""
-
-    parallel_jobs = 1  # los Separator no se pueden usar desde dos hilos a la vez
+    """Corre en el contenedor de Modal, no en el backend."""
 
     def __init__(self) -> None:
-        # Un Separator por modelo, cargado una sola vez: así el preset "denoise", que usa dos
-        # modelos seguidos, no recarga en cada trabajo (cargar el modelo es lo lento).
+        # Un Separator por modelo, cargado una sola vez: cargar el modelo es lo más lento.
         self._seps: Dict[str, object] = {}
-        # Tiempos del último trabajo (los usa el worker de Modal para calcular costos).
-        # Ojo: demucs carga sus pesos dentro de separate(), así que en 4stem eso cae en separate_seconds.
         self.last_timings: Dict[str, float] = {}
 
     def device_info(self) -> dict:
@@ -144,9 +132,8 @@ class RealEngine:
             sep = Separator(
                 model_file_dir=str(config.MODEL_DIR),
                 output_dir=str(out_dir),
-                output_format="WAV",  # siempre WAV sin pérdida; se convierte al descargar
+                output_format="WAV",
                 log_level=logging.INFO,
-                # La precisión se decide al cargar el modelo, así que puede ser distinta por preset.
                 use_autocast=autocast,
                 mdxc_params={
                     "segment_size": 256,
@@ -159,7 +146,7 @@ class RealEngine:
             log.info("Cargando modelo %s (autocast=%s)", model, autocast)
             sep.load_model(model_filename=model)
             self._seps[model] = sep
-        # Redirigir la salida de este trabajo a su carpeta (mismo patrón que usa la librería).
+        # Cada trabajo guarda en su propia carpeta.
         sep.output_dir = str(out_dir)
         if getattr(sep, "model_instance", None) is not None:
             sep.model_instance.output_dir = str(out_dir)
@@ -167,7 +154,7 @@ class RealEngine:
 
     @staticmethod
     def _expected_bars(sep) -> int:
-        """Demucs hace una pasada (una barra de tqdm) por cada submodelo del bag y cada shift."""
+        """Barras de tqdm que hará demucs: una por submodelo y por shift."""
         inst = getattr(sep, "model_instance", None)
         demucs = getattr(inst, "demucs_model_instance", None)
         if demucs is None:
@@ -178,15 +165,13 @@ class RealEngine:
         self, model: str, autocast: bool, input_path: Path, out_dir: Path,
         names: Dict[str, str], on_progress: ProgressCb, timings: Dict[str, float],
     ) -> Dict[str, Path]:
-        """Corre un modelo. `names` traduce la pista del modelo al nombre del archivo de salida
-        (audio-separator le quita los `_` y `.` de las orillas, así que no deben empezar con ellos).
-        Si `names` tiene una sola pista y el modelo da más, solo se guarda esa."""
+        """`names` da el nombre de salida de cada pista del modelo (sin `_` ni `.` en las orillas:
+        la librería los quita). Si trae una sola pista, solo se guarda esa."""
         t0 = time.perf_counter()
         sep = self._separator(model, out_dir, autocast)
         t1 = time.perf_counter()
         inst = sep.model_instance
-        # Se cambia en la instancia (no en el Separator) porque el modelo puede estar compartido
-        # con otro preset que sí quiere todas las pistas; se restaura al terminar.
+        # El modelo se comparte entre presets: se cambia solo para este trabajo y se restaura.
         inst.output_single_stem = next(iter(names)) if len(names) == 1 else None
         _local.cb, _local.bars_fn, _local.bars, _local.bars_done = on_progress, lambda: self._expected_bars(sep), None, 0
         try:
@@ -215,7 +200,6 @@ class RealEngine:
         if "steps" in spec:
             result = self._separate_steps(spec, input_path, out_dir, on_progress, timings)
         else:
-            # Nombre de la pista en el modelo -> nombre que ve la página (y nombre del archivo de salida).
             names = spec.get("model_stems") or {s: s for s in spec["stems"]}
             result = self._run_model(
                 spec["model"], spec.get("autocast", False), input_path, out_dir, names, on_progress, timings
@@ -228,8 +212,7 @@ class RealEngine:
     def _separate_steps(
         self, spec: dict, input_path: Path, out_dir: Path, on_progress: ProgressCb, timings: Dict[str, float]
     ) -> Dict[str, Path]:
-        """Varios modelos seguidos: cada paso recibe una pista del anterior (`input`).
-        Las pistas intermedias se borran; solo se entregan las de `stems` del preset."""
+        """Modelos encadenados: cada paso recibe una pista del anterior y las intermedias se borran."""
         steps = spec["steps"]
         produced: Dict[str, Path] = {}
         for i, step in enumerate(steps):
@@ -243,15 +226,14 @@ class RealEngine:
             ))
 
         result = {s: produced[s] for s in spec["stems"] if s in produced}
-        for name, path in produced.items():  # pistas intermedias
+        for name, path in produced.items():
             if name not in result:
                 path.unlink(missing_ok=True)
         return result
 
 
-# ---------------------------------------------------------------------------
 class SeparationError(RuntimeError):
-    """Error con un mensaje pensado para mostrarse tal cual en la página."""
+    """Su mensaje se muestra tal cual en la página."""
 
 
 def _friendly_modal_error(exc: BaseException) -> str:
@@ -267,28 +249,24 @@ def _friendly_modal_error(exc: BaseException) -> str:
     if isinstance(exc, me.RequestSizeError):
         return "El archivo es demasiado grande para el servicio de separación. Prueba con uno más pequeño."
     if isinstance(exc, (me.NotFoundError, me.AuthError, me.PermissionDeniedError)):
-        # Problema de configuración (app no desplegada, token inválido): el detalle queda en el log.
+        # App no desplegada o token inválido: el detalle queda en el log.
         return "El servicio de separación no está disponible en este momento."
     if isinstance(exc, (me.ConnectionError, me.ServiceError, me.InternalError, me.InternalFailure, ConnectionError)):
         return "No se pudo conectar con el servicio de separación. Intenta de nuevo en unos minutos."
     return "No se pudo procesar el audio. Si el archivo se reproduce bien, intenta de nuevo más tarde."
 
 
-# ---------------------------------------------------------------------------
 class ModalEngine:
-    """Separa en la nube con Modal. Requiere `modal deploy modal_app.py` y el token de `modal setup`."""
+    """Requiere `modal deploy modal_app.py` y el token de `modal setup`."""
 
-    SEPARATION_SHARE = 0.7  # el resto de la barra es la descarga de las pistas
-    parallel_jobs = config.PARALLEL_JOBS  # cada trabajo corre en su propio contenedor
+    SEPARATION_SHARE = 0.7  # el 30 % restante de la barra es la descarga de las pistas
+    parallel_jobs = config.PARALLEL_JOBS
 
     def __init__(self, app_name: Optional[str] = None) -> None:
         import modal
 
         self.app_name = app_name or config.MODAL_APP
         self._cls = modal.Cls.from_name(self.app_name, "Separator")
-        # Estadísticas del último trabajo: tiempos que reporta el worker + lo medido desde aquí.
-        # Con trabajos en paralelo es "el último que terminó"; el benchmark corre de uno en uno.
-        self.last_stats: Dict[str, float] = {}
 
     def device_info(self) -> dict:
         gpu = self.app_name.rsplit("-", 1)[-1].upper() if self.app_name.startswith("splitter-gpu-") else "GPU"
@@ -300,7 +278,6 @@ class ModalEngine:
         out_dir.mkdir(parents=True, exist_ok=True)
         result: Dict[str, Path] = {}
         stats: Dict[str, float] = {}
-        # La bajada de las pistas tarda bastante (decenas de MB), así que se lleva su parte de la barra.
         n_stems = len(config.PRESETS[preset]["stems"])
         audio = input_path.read_bytes()
         bytes_received = 0
@@ -318,7 +295,7 @@ class ModalEngine:
                 bytes_received += len(data)
                 flac = out_dir / f"{stem}.flac"
                 flac.write_bytes(data)
-                # El resto del backend trabaja con WAV (se convierte al descargar), así que se decodifica aquí.
+                # Llegan en FLAC; el backend trabaja con WAV.
                 wav = out_dir / f"{stem}.wav"
                 subprocess.run(
                     ["ffmpeg", "-y", "-loglevel", "error", "-i", str(flac), "-c:a", "pcm_s16le", str(wav)],
@@ -328,7 +305,7 @@ class ModalEngine:
                 result[stem] = wav
                 on_progress(self.SEPARATION_SHARE + (1 - self.SEPARATION_SHARE) * len(result) / n_stems)
         except Exception as exc:
-            # El error técnico queda en el log (encadenado); la página recibe un mensaje entendible.
+            # El error técnico queda en el log; la página recibe uno entendible.
             raise SeparationError(_friendly_modal_error(exc)) from exc
         if not result:
             log.error("Modal %s (%s) terminó sin devolver pistas", self.app_name, preset)
@@ -338,16 +315,14 @@ class ModalEngine:
             bytes_sent=len(audio),
             bytes_received=bytes_received,
         )
-        self.last_stats = stats
         log.info("Modal %s (%s): %s", self.app_name, preset, stats)
         return result
 
 
-# ---------------------------------------------------------------------------
 class FakeEngine:
-    """Simula la separación: genera tonos distintos por stem y avanza el progreso poco a poco."""
+    """Simula la separación con un tono distinto por pista."""
 
-    parallel_jobs = config.PARALLEL_JOBS  # se comporta como Modal, para probar la cola
+    parallel_jobs = config.PARALLEL_JOBS  # como Modal, para probar la cola
 
     def device_info(self) -> dict:
         return {"engine": "fake", "cuda": False, "device": "simulado"}
@@ -382,4 +357,4 @@ def build_engine():
         return FakeEngine()
     if config.ENGINE == "modal":
         return ModalEngine()
-    return RealEngine()
+    raise ValueError(f"SPLITTER_ENGINE debe ser 'modal' o 'fake', no {config.ENGINE!r}")

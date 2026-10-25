@@ -53,13 +53,25 @@
   #status { font-weight:600; }
   .error { color:var(--err); background:#ff6b6b18; border:1px solid #ff6b6b55; border-radius:6px; padding:10px 12px; margin-top:12px; }
 
-  .track { border-top:1px solid var(--line); padding:12px 0; }
-  .track:first-child { border-top:0; padding-top:0; }
-  .track-head { display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap; }
-  .track audio { width:100%; margin-top:6px; }
+  /* Reproductor */
+  .player { display:flex; align-items:center; gap:10px; background:var(--panel2); border-radius:8px; padding:10px 12px; }
+  button.play { flex:none; width:44px; height:44px; padding:0; border-radius:50%; display:grid; place-items:center;
+                background:var(--accent); border-color:var(--accent); color:var(--accent-ink); }
+  .player input[type=range] { flex:1; min-width:0; }
+  input[type=range] { accent-color:var(--accent); }
+  .time { font-size:13px; color:var(--muted); font-variant-numeric:tabular-nums; min-width:3.2em; text-align:center; }
+  #playerStatus { margin:6px 0 0; min-height:1.5em; }
+
+  .track { display:grid; grid-template-columns:minmax(7em, 10em) 1fr 3.2em auto; align-items:center; gap:10px;
+           border-top:1px solid var(--line); padding:10px 0; }
+  .track:first-child { border-top:0; }
+  .track input[type=range] { width:100%; }
+  .vol { font-size:13px; color:var(--muted); font-variant-numeric:tabular-nums; text-align:right; }
+  @media (max-width:480px) { .track { grid-template-columns:1fr 3.2em auto; } .track strong { grid-column:1 / -1; } }
   a.btn { display:inline-block; padding:6px 12px; border:1px solid var(--accent); border-radius:6px; color:var(--accent); text-decoration:none; }
   a.btn.solid { background:var(--accent); color:var(--accent-ink); font-weight:600; }
-  .download-bar { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:14px; }
+  a.btn[aria-disabled="true"] { opacity:.6; pointer-events:none; }
+  .download-bar { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin:14px 0; }
   [hidden] { display:none !important; }
 </style>
 </head>
@@ -106,13 +118,22 @@
 
   <section id="results" hidden>
     <h2>¡Listo! Escucha y descarga</h2>
+    <div class="player">
+      <button type="button" class="play" id="playAll" aria-label="Reproducir" disabled></button>
+      <span class="time" id="timeNow">0:00</span>
+      <input type="range" id="seek" min="0" max="0" step="0.1" value="0" aria-label="Posición" disabled>
+      <span class="time" id="timeTotal">0:00</span>
+    </div>
+    <p class="muted" id="playerStatus"></p>
+    <div id="trackList"></div>
+    <p class="muted">El volumen es solo para escuchar: las descargas salen con cada pista completa.</p>
     <div class="download-bar">
       <a id="zip" class="btn solid" href="#" download>Descargar todo</a>
       <label class="muted">Formato:
         <select id="format"></select>
       </label>
     </div>
-    <div id="trackList"></div>
+    <div class="error" id="resultsError" hidden></div>
     <p class="muted" id="expires"></p>
     <button type="button" id="again">Procesar otro audio</button>
   </section>
@@ -121,8 +142,7 @@
 <script>
 const $ = (id) => document.getElementById(id);
 
-// Lo que ve el usuario. Las claves son las del backend; si el backend agrega algo que no está aquí,
-// simplemente no se muestra.
+// Textos para el usuario. Lo que el backend tenga y no esté aquí no se muestra.
 const MODES = [
   { id: "vocals", title: "Separar voz y música", text: "Una pista con la voz y otra con la música sin voz.", presets: { fast: "2stem" }, button: "Separar" },
   { id: "instruments", title: "Separar instrumentos", text: "Voz, batería, bajo y el resto de instrumentos por separado.", presets: { fast: "4stem_fast", best: "4stem" }, button: "Separar" },
@@ -150,7 +170,7 @@ async function errorDetail(res) {
 
 function minutes(sec) { return `${Math.floor(sec / 60)}:${String(Math.floor(sec % 60)).padStart(2, "0")}`; }
 
-// ---------------------------------------------------------------- configuración
+// --- configuración
 async function loadConfig() {
   try {
     const res = await fetch("/api/config");
@@ -184,7 +204,7 @@ async function loadConfig() {
   updateButton();
 }
 
-// ---------------------------------------------------------------- paso 1: qué hacer
+// --- paso 1: qué hacer
 function currentPreset() {
   if (!mode) return null;
   const speed = document.querySelector("input[name=speed]:checked").value;
@@ -200,7 +220,7 @@ function selectMode(m) {
 }
 for (const r of document.querySelectorAll("input[name=speed]")) r.onchange = renderTracks;
 
-// ---------------------------------------------------------------- paso 3: pistas
+// --- paso 3: pistas
 function renderTracks() {
   if (!mode) return;
   const stems = cfg.presets[currentPreset()].stems;
@@ -212,7 +232,7 @@ function renderTracks() {
     l.querySelector("span").textContent = trackName(s);
     $("tracks").append(l);
   }
-  // Con una sola pista no hay nada que elegir (p. ej. limpiar ruido: solo la voz limpia).
+  // Con una sola pista no hay nada que elegir.
   $("tracksBox").hidden = stems.length < 2;
   updateButton();
 }
@@ -228,10 +248,9 @@ function updateButton() {
   $("go").disabled = busy || !!hint || !cfg;
 }
 
-// ---------------------------------------------------------------- paso 2: archivo
+// --- paso 2: archivo
 function readDuration(f) {
-  // Duración leída en el navegador para avisar antes de subir. Si el navegador no puede
-  // leer el formato, devuelve null y el servidor lo revisa.
+  // Para avisar antes de subir. Si el navegador no puede leerla, la revisa el servidor.
   return new Promise((resolve) => {
     const a = document.createElement("audio");
     const url = URL.createObjectURL(f);
@@ -275,9 +294,9 @@ $("drop").ondragover = (e) => { e.preventDefault(); $("drop").classList.add("ove
 $("drop").ondragleave = () => $("drop").classList.remove("over");
 $("drop").ondrop = (e) => { e.preventDefault(); $("drop").classList.remove("over"); setFile(e.dataTransfer.files[0]); };
 
-// ---------------------------------------------------------------- subir y seguir el progreso
+// --- subir y seguir el progreso
 function upload(fd) {
-  // XMLHttpRequest en vez de fetch para poder mostrar el avance de la subida.
+  // XMLHttpRequest y no fetch: fetch no informa el avance de la subida.
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open("POST", "/api/jobs");
@@ -296,9 +315,22 @@ function upload(fd) {
   });
 }
 
+// Se recuerda el trabajo para retomarlo si se recarga la página.
+const SAVED_JOB = "splitter:trabajo";
+function saveJob(id) { try { id ? localStorage.setItem(SAVED_JOB, id) : localStorage.removeItem(SAVED_JOB); } catch {} }
+function savedJob() { try { return localStorage.getItem(SAVED_JOB); } catch { return null; } }
+
+function discardJob() {
+  if (lastJob) fetch(`/api/jobs/${lastJob.id}`, { method: "DELETE", keepalive: true }).catch(() => {});
+  lastJob = null;
+  saveJob(null);
+}
+
 $("go").onclick = async () => {
   showError("");
   busy = true; updateButton();
+  clearTracks();
+  discardJob();
   $("results").hidden = true;
   $("progress").hidden = false;
   setBar(0, "Subiendo tu archivo…", "");
@@ -312,19 +344,48 @@ $("go").onclick = async () => {
   try { job = await upload(fd); }
   catch (e) { $("progress").hidden = true; showError(e.message); busy = false; updateButton(); return; }
 
+  saveJob(job.id);
   showJob(job);
-  es = new EventSource(`/api/jobs/${job.id}/events`);
+  follow(job.id);
+};
+
+function follow(id) {
+  es = new EventSource(`/api/jobs/${id}/events`);
   es.addEventListener("update", (ev) => {
     const j = JSON.parse(ev.data);
     showJob(j);
     if (j.status === "done") { finish(); showResults(j); }
-    else if (j.status === "error") { finish(); $("progress").hidden = true; showError(j.error || "No se pudo procesar el audio. Intenta de nuevo."); }
+    else if (j.status === "error") { finish(); saveJob(null); $("progress").hidden = true; showError(j.error || "No se pudo procesar el audio. Intenta de nuevo."); }
   });
-  es.addEventListener("gone", () => { finish(); $("progress").hidden = true; showError("Este trabajo ya no está disponible. Vuelve a subir el archivo."); });
+  es.addEventListener("gone", () => { finish(); saveJob(null); $("progress").hidden = true; showError("Este trabajo ya no está disponible. Vuelve a subir el archivo."); });
   es.onerror = () => {
     if (es && es.readyState === EventSource.CLOSED) { finish(); showError("Se perdió la conexión con el servidor. Recarga la página e intenta de nuevo."); }
   };
-};
+}
+
+async function resumeJob() {
+  const id = savedJob();
+  if (!id || !cfg) return;
+  let j;
+  try {
+    const res = await fetch(`/api/jobs/${id}`);
+    if (!res.ok) { saveJob(null); return; }  // ya expiró o el servidor se reinició
+    j = await res.json();
+  } catch { return; }
+  if (j.status === "error") { saveJob(null); return; }
+  const m = MODES.find((x) => Object.values(x.presets).includes(j.preset));
+  if (m) {
+    const speed = Object.keys(m.presets).find((k) => m.presets[k] === j.preset);
+    const radio = document.querySelector(`input[name=speed][value="${speed}"]`);
+    if (radio) radio.checked = true;
+    selectMode(m);
+  }
+  if (j.status === "done") { showResults(j); return; }
+  busy = true; updateButton();
+  $("progress").hidden = false;
+  showJob(j);
+  follow(j.id);
+}
 
 function finish() { if (es) { es.close(); es = null; } busy = false; updateButton(); }
 
@@ -354,19 +415,149 @@ function showJob(j) {
   }
 }
 
-// ---------------------------------------------------------------- resultados
+// --- reproductor
+// El volumen va por Web Audio porque en iPhone `audio.volume` no se puede cambiar.
+const PLAY_ICON = '<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M8 5v14l11-7z" fill="currentColor"/></svg>';
+const PAUSE_ICON = '<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M7 5h4v14H7zM13 5h4v14h-4z" fill="currentColor"/></svg>';
+let actx = null, tracks = [], playing = false, syncTimer = null, dragging = false;
+
+function setPlaying(on) {
+  playing = on;
+  $("playAll").innerHTML = on ? PAUSE_ICON : PLAY_ICON;
+  $("playAll").setAttribute("aria-label", on ? "Pausar" : "Reproducir");
+  clearInterval(syncTimer);
+  syncTimer = on ? setInterval(sync, 250) : null;
+}
+
+function connectAudio() {
+  // Se crea en el primer play: los navegadores no dejan sonar nada antes de un clic.
+  const Ctx = window.AudioContext || window.webkitAudioContext;
+  if (!Ctx) return;  // sin Web Audio el volumen queda en audio.volume
+  if (!actx) actx = new Ctx();
+  for (const t of tracks) {
+    if (t.gain) continue;
+    t.source = actx.createMediaElementSource(t.audio);
+    t.gain = actx.createGain();
+    t.gain.gain.value = t.vol;
+    t.source.connect(t.gain).connect(actx.destination);
+  }
+  if (actx.state === "suspended") actx.resume();
+}
+
+function setVolume(t, v) {
+  t.vol = v;
+  if (t.gain) t.gain.gain.value = v; else t.audio.volume = v;
+}
+
+async function playAll() {
+  connectAudio();
+  const at = tracks[0].audio.currentTime;
+  for (const t of tracks) if (Math.abs(t.audio.currentTime - at) > 0.01) t.audio.currentTime = at;
+  setPlaying(true);
+  try {
+    await Promise.all(tracks.map((t) => t.audio.play()));
+    $("playerStatus").textContent = "";
+  } catch (err) {
+    // AbortError: se pausó antes de arrancar (el usuario, o mientras otra pista carga).
+    if (err && err.name === "AbortError") return;
+    pauseAll();
+    $("playerStatus").textContent = "No se pudo reproducir. Intenta de nuevo.";
+  }
+}
+
+function pauseAll() { for (const t of tracks) t.audio.pause(); setPlaying(false); }
+
+function seekAll(sec) { for (const t of tracks) t.audio.currentTime = sec; showTime(sec); }
+
+function showTime(sec) {
+  $("timeNow").textContent = minutes(sec);
+  if (!dragging) $("seek").value = sec;
+}
+
+function sync() {
+  // Cada pista lleva su propio reloj: la que se desfasa se alinea con la primera.
+  const lead = tracks[0].audio;
+  for (const t of tracks.slice(1)) {
+    if (!t.audio.paused && Math.abs(t.audio.currentTime - lead.currentTime) > 0.08) t.audio.currentTime = lead.currentTime;
+  }
+  showTime(lead.currentTime);
+}
+
+function addTrack(s) {
+  const name = trackName(s.name);
+  const div = document.createElement("div");
+  div.className = "track";
+  div.innerHTML = '<strong></strong><input type="range" min="0" max="100" value="100"><span class="vol">100%</span><a class="btn" download>Descargar</a>';
+  div.querySelector("strong").textContent = name;
+  const audio = new Audio();
+  audio.preload = "auto";
+  audio.src = s.preview_url;
+  const t = { audio, vol: 1, gain: null, source: null };
+  const range = div.querySelector("input");
+  range.setAttribute("aria-label", `Volumen de ${name}`);
+  range.oninput = () => { setVolume(t, range.value / 100); div.querySelector(".vol").textContent = `${range.value}%`; };
+  const link = div.querySelector("a");
+  link.dataset.base = s.download_url;
+  link.onclick = prepareDownload;
+  // Si una pista se queda cargando, las demás la esperan para no desfasarse.
+  audio.addEventListener("waiting", () => { if (playing) for (const o of tracks) if (o !== t) o.audio.pause(); });
+  audio.addEventListener("playing", () => {
+    if (playing) for (const o of tracks) if (o.audio.paused) { o.audio.currentTime = audio.currentTime; o.audio.play().catch(() => {}); }
+  });
+  tracks.push(t);
+  $("trackList").append(div);
+  return t;
+}
+
+function loaded(audio) {
+  return new Promise((resolve, reject) => {
+    if (audio.readyState >= 1) return resolve();
+    audio.addEventListener("loadedmetadata", resolve, { once: true });
+    audio.addEventListener("error", reject, { once: true });
+  });
+}
+
+function clearTracks() {
+  // Un audio que ya no se ve sigue sonando si no se para.
+  setPlaying(false);
+  for (const t of tracks) {
+    t.audio.pause();
+    if (t.source) { t.source.disconnect(); t.gain.disconnect(); }
+    t.audio.removeAttribute("src");
+    t.audio.load();
+  }
+  tracks = [];
+  $("trackList").innerHTML = "";
+  $("seek").max = 0; $("seek").value = 0;
+  $("timeNow").textContent = $("timeTotal").textContent = "0:00";
+  $("playAll").disabled = $("seek").disabled = true;
+}
+
+$("playAll").onclick = () => (playing ? pauseAll() : playAll());
+$("seek").addEventListener("pointerdown", () => { dragging = true; });
+$("seek").addEventListener("input", () => { $("timeNow").textContent = minutes(+$("seek").value); });
+$("seek").addEventListener("change", () => { dragging = false; seekAll(+$("seek").value); });
+
+// --- resultados
 function showResults(j) {
   lastJob = j;
-  $("trackList").innerHTML = "";
-  for (const s of j.stems) {
-    const div = document.createElement("div");
-    div.className = "track";
-    div.innerHTML = '<div class="track-head"><strong></strong><a class="btn" download>Descargar</a></div><audio controls preload="none"></audio>';
-    div.querySelector("strong").textContent = trackName(s.name);
-    div.querySelector("audio").src = s.preview_url;
-    div.querySelector("a").dataset.base = s.download_url;
-    $("trackList").append(div);
-  }
+  saveJob(j.id);
+  clearTracks();
+  showResultsError("");
+  for (const s of j.stems) addTrack(s);
+  const mine = tracks;
+  tracks[0]?.audio.addEventListener("ended", () => { pauseAll(); seekAll(0); });
+  $("playerStatus").textContent = "Cargando pistas…";
+  Promise.all(mine.map((t) => loaded(t.audio))).then(() => {
+    if (tracks !== mine) return;  // ya se pasó a otro audio
+    const total = Math.max(...mine.map((t) => t.audio.duration || 0));
+    $("seek").max = total;
+    $("timeTotal").textContent = minutes(total);
+    $("playAll").disabled = $("seek").disabled = false;
+    $("playerStatus").textContent = "";
+  }, () => {
+    if (tracks === mine) $("playerStatus").textContent = "No se pudo cargar la vista previa. Puedes descargar las pistas igual.";
+  });
   $("zip").hidden = j.stems.length < 2;
   $("expires").textContent = j.expires_in_minutes
     ? `Tus archivos se borran automáticamente en ${j.expires_in_minutes} minutos. Descárgalos antes.`
@@ -384,14 +575,45 @@ function updateLinks() {
 }
 $("format").onchange = updateLinks;
 
+function showResultsError(msg) { $("resultsError").textContent = msg || ""; $("resultsError").hidden = !msg; }
+
+async function prepareDownload(e) {
+  // El servidor convierte el formato la primera vez (puede tardar): primero prepare=1, luego descarga.
+  e.preventDefault();
+  const a = e.currentTarget;
+  if (a.getAttribute("aria-disabled") === "true") return;
+  const label = a.textContent;
+  a.textContent = "Preparando…";
+  a.setAttribute("aria-disabled", "true");
+  showResultsError("");
+  try {
+    const res = await fetch(`${a.href}&prepare=1`);
+    if (!res.ok) throw new Error(await errorDetail(res));
+    const link = document.createElement("a");
+    link.href = a.href;
+    link.download = "";
+    document.body.append(link);
+    link.click();
+    link.remove();
+  } catch (err) {
+    showResultsError(err.message || "No se pudo preparar la descarga. Intenta de nuevo.");
+  } finally {
+    a.textContent = label;
+    a.removeAttribute("aria-disabled");
+  }
+}
+$("zip").onclick = prepareDownload;
+
 $("again").onclick = () => {
-  lastJob = null;
+  clearTracks();
+  discardJob();
   $("results").hidden = true;
   setFile(null);
   window.scrollTo({ top: 0, behavior: "smooth" });
 };
 
-loadConfig();
+setPlaying(false);
+loadConfig().then(resumeJob);
 </script>
 </body>
 </html>

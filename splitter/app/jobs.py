@@ -1,11 +1,9 @@
-"""Cola de trabajos: varios workers la atienden en paralelo (cada uno, un trabajo a la vez).
-
-Cuántos depende del motor: con Modal cada trabajo corre en su propio contenedor con su propia GPU;
-con la GPU local solo cabe uno (ver `parallel_jobs` en app/engine.py)."""
+"""Cola de trabajos, atendida por varios hilos a la vez (uno por GPU de Modal)."""
 from __future__ import annotations
 
 import logging
 import queue
+import re
 import shutil
 import threading
 import time
@@ -30,13 +28,13 @@ class Job:
     input_path: Path
     out_dir: Path
     status: str = QUEUED
-    progress: Optional[float] = 0.0  # 0..1, None = indeterminado
+    progress: Optional[float] = 0.0  # 0..1, None si no se puede medir
     message: str = "En cola"
     error: Optional[str] = None
     stem_files: Dict[str, Path] = field(default_factory=dict)
     created_at: float = field(default_factory=time.time)
     finished_at: Optional[float] = None
-    version: int = 0  # sube con cada cambio; el stream de eventos lo usa para saber si hay novedades
+    version: int = 0  # sube con cada cambio, para que los eventos sepan si hay novedades
 
     def touch(self) -> None:
         self.version += 1
@@ -46,7 +44,7 @@ class JobManager:
     def __init__(self, engine) -> None:
         self.engine = engine
         self.jobs: Dict[str, Job] = {}
-        self._order: List[str] = []  # ids en cola, para calcular la posición
+        self._order: List[str] = []  # para la posición en la cola
         self._queue: "queue.Queue[str]" = queue.Queue(maxsize=config.MAX_QUEUE)
         self._lock = threading.Lock()
         self._stop = threading.Event()
@@ -56,9 +54,9 @@ class JobManager:
         ]
         self._cleaner = threading.Thread(target=self._clean_loop, name="splitter-cleaner", daemon=True)
 
-    # -- ciclo de vida -------------------------------------------------------
     def start(self) -> None:
         config.DATA_DIR.mkdir(parents=True, exist_ok=True)
+        self._remove_leftovers()
         for w in self._workers:
             w.start()
         log.info("%d trabajo(s) en paralelo", len(self._workers))
@@ -67,7 +65,6 @@ class JobManager:
     def stop(self) -> None:
         self._stop.set()
 
-    # -- API para las rutas --------------------------------------------------
     def new_job_dir(self) -> tuple[str, Path]:
         job_id = uuid.uuid4().hex
         d = config.DATA_DIR / job_id
@@ -75,7 +72,7 @@ class JobManager:
         return job_id, d
 
     def submit(self, job: Job) -> None:
-        """Encola el trabajo. Lanza queue.Full si la cola está llena."""
+        """Lanza queue.Full si la cola está llena."""
         with self._lock:
             self._queue.put_nowait(job.id)
             self.jobs[job.id] = job
@@ -100,7 +97,6 @@ class JobManager:
         shutil.rmtree(config.DATA_DIR / job_id, ignore_errors=True)
         return True
 
-    # -- worker ---------------------------------------------------------------
     def _run(self) -> None:
         while not self._stop.is_set():
             try:
@@ -111,7 +107,7 @@ class JobManager:
             with self._lock:
                 if job_id in self._order:
                     self._order.remove(job_id)
-            if job is None:  # fue borrado mientras esperaba
+            if job is None:  # se borró mientras esperaba
                 continue
             self._process(job)
 
@@ -120,7 +116,7 @@ class JobManager:
         job.touch()
 
         def on_progress(fraction: float) -> None:
-            # monótono y con tope en 95%: el 100% solo llega cuando termina de verdad
+            # Nunca baja, y se queda en 95 % hasta que termina de verdad.
             new = min(0.95, max(job.progress or 0.0, fraction * 0.95))
             if new - (job.progress or 0.0) >= 0.01:
                 job.progress = new
@@ -128,23 +124,32 @@ class JobManager:
 
         try:
             files = self.engine.separate(job.input_path, job.out_dir, job.preset, on_progress)
-            # Solo se conservan las pistas que el usuario pidió (idea 2).
+            # Solo se guardan las pistas que pidió el usuario.
             keep = {s: p for s, p in files.items() if s in job.wanted_stems}
             for s, p in files.items():
                 if s not in keep:
                     p.unlink(missing_ok=True)
             job.stem_files = keep
             job.status, job.progress, job.message = DONE, 1.0, "Listo"
-        except Exception as exc:  # noqa: BLE001 - cualquier fallo del modelo debe llegar a la página
+        except Exception as exc:  # noqa: BLE001 - todo fallo debe llegar a la página
             log.exception("Falló el trabajo %s", job.id)
             job.status, job.progress, job.message = ERROR, None, "Error al procesar el audio"
             job.error = str(exc)[:300]
         finally:
             job.finished_at = time.time()
-            job.input_path.unlink(missing_ok=True)  # no guardamos el original más de lo necesario
+            job.input_path.unlink(missing_ok=True)  # el original ya no hace falta
             job.touch()
 
-    # -- limpieza -------------------------------------------------------------
+    def _remove_leftovers(self) -> None:
+        """Borra las carpetas de una ejecución anterior: los trabajos viven en memoria y se perdieron."""
+        removed = 0
+        for d in config.DATA_DIR.iterdir():
+            if d.is_dir() and re.fullmatch(r"[0-9a-f]{32}", d.name):
+                shutil.rmtree(d, ignore_errors=True)
+                removed += 1
+        if removed:
+            log.info("Borradas %d carpeta(s) de trabajos de una ejecución anterior", removed)
+
     def _clean_loop(self) -> None:
         while not self._stop.wait(60):
             cutoff = time.time() - config.JOB_TTL_MINUTES * 60
